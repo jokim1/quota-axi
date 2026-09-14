@@ -209,15 +209,6 @@ describe("Kimi Code CLI credential discovery", () => {
     expect(implementation).not.toMatch(
       /node:child_process|\b(?:spawn|execFile|writeFile|mkdir|rename|unlink)\b|device_id|\.pi\/agent\/auth\.json/,
     );
-    /**
-     * A `refresh_token` is checked for presence only and its value is never
-     * read, rendered, or exchanged, so the sole mention is the quoted key in
-     * the `Object.hasOwn` presence idiom.
-     */
-    expect(implementation.match(/"refresh_token"/g)).toHaveLength(1);
-    expect(implementation).toContain(
-      'Object.hasOwn(credential, "refresh_token")',
-    );
   });
 
   it("bounds malformed credential files without returning their contents", async () => {

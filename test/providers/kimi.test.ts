@@ -1484,6 +1484,37 @@ describe("Kimi credential outcomes and cache policy", () => {
     expect(rendered).not.toContain("auth_required");
   });
 
+  it("lets a CLI transient outrank a rejected refreshable Pi expiry", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    const remove = vi.fn();
+    const report = await testAdapter({
+      broker: broker({
+        status: "expired",
+        refreshable: true,
+        credential: "soft-expired-pi-token",
+      }),
+      cliCredentialSource: cliCredentialSource({
+        status: "available",
+        accessToken: "cli-token",
+      }),
+      fetch: request,
+      deleteCachedProvider: remove,
+    }).fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(remove).not.toHaveBeenCalled();
+    expect(report.state).toMatchObject({
+      status: "error",
+      stale: false,
+      error: "provider_unavailable",
+    });
+    expect(report.state.authStatus).toBeUndefined();
+    expect(report.state.error).not.toBe("pi_kimi_credential_expired");
+  });
+
   it("preserves stale cache after a CLI credential read failure", async () => {
     const remove = vi.fn();
     const report = await testAdapter({

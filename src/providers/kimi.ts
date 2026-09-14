@@ -593,15 +593,22 @@ async function readKimiQuota(
 }
 
 /**
- * Which recorded failure speaks for the provider. A sibling that only failed
- * transiently outranks a definitive rejection, so a rejected credential can
- * never be reported as a sign-out while another source's outage is unresolved;
- * among definitive verdicts a store that actually held a credential outranks
- * one that was simply absent.
+ * Which recorded failure speaks for the provider. An operational transient
+ * outranks a soft-expiry verdict, which outranks a definitive rejection, so a
+ * rejected credential can never be reported as a sign-out while another
+ * source's outage is unresolved; among definitive verdicts a store that
+ * actually held a credential outranks one that was simply absent.
  */
 function definingFailure(failures: KimiFailureRecord[]): KimiFailureRecord {
   return (
-    failures.find((record) => !record.failure.definitiveAuth) ??
+    failures.find(
+      (record) =>
+        !record.failure.definitiveAuth &&
+        record.failure.authStatus !== "expired_refreshable",
+    ) ??
+    failures.find(
+      (record) => record.failure.authStatus === "expired_refreshable",
+    ) ??
     failures.find((record) => record.credentialPresent) ??
     failures[0] ?? {
       failure: new KimiFailure("credential_resolution_failed", {
