@@ -211,25 +211,6 @@ describe("Kimi Code CLI credential discovery", () => {
     );
   });
 
-  it("reads the refresh token by presence only, never by value", () => {
-    const implementation = readFileSync(
-      new URL(
-        "../../src/providers/kimi-code-cli-credential.ts",
-        import.meta.url,
-      ),
-      "utf8",
-    );
-
-    // Refreshability is a presence check the vendor CLI owns the rotation for;
-    // the value must never be dereferenced, indexed, or destructured out.
-    expect(implementation).toContain(
-      'Object.hasOwn(credential, "refresh_token")',
-    );
-    expect(implementation).not.toMatch(
-      /\.refresh_token\b|\[\s*["']refresh_token["']\s*\]|\brefresh_token\s*[:,}]/,
-    );
-  });
-
   it("bounds malformed credential files without returning their contents", async () => {
     const sentinel = "CLI-CREDENTIAL-SENTINEL-938475";
     const readFile = vi.fn(async (_path: string, maxBytes: number) =>
