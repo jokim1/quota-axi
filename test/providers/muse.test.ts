@@ -741,6 +741,59 @@ describe("Muse payload normalization", () => {
     });
   });
 
+  it("treats omitted or null subs_usage as absent windows, not untrusted", () => {
+    for (const payload of [
+      { is_subs_active: true, subs_tier_name: "pro" },
+      { is_subs_active: true, subs_tier_name: "pro", subs_usage: null },
+    ]) {
+      expect(normalizeMusePayload(payload, NOW)).toEqual({
+        plan: "pro",
+        windows: [],
+        untrustedWindowIds: [],
+      });
+    }
+  });
+
+  it("names a present non-object subs_usage as untrusted", () => {
+    expect(
+      normalizeMusePayload({ is_subs_active: true, subs_usage: [] }, NOW)
+        .untrustedWindowIds,
+    ).toEqual(["subs_usage"]);
+  });
+
+  it("an active mint body without subs_usage is fresh with plan and no untrusted field", async () => {
+    const body = {
+      api_key: "SENTINEL-MUSE-ISSUED-KEY-must-never-appear",
+      base_url: "https://api.meta.ai",
+      has_payment_method: true,
+      require_payment: false,
+      is_subs_active: true,
+      can_subscribe: false,
+      show_subs_upsell: true,
+      user_full_name: "SENTINEL Muse Display Name",
+      user_email: "sentinel-muse-user@example.invalid",
+      user_avatar_url: null,
+      payment_method: "SENTINELPM",
+      action_url: null,
+      subs_tier_id: "SENTINEL-TIER-ID01",
+      subs_tier_name: "pro",
+      is_subs_upgrade_available: false,
+    };
+    const report = await testAdapter({
+      fetch: sequentialFetch([jsonResponse(body)]),
+    }).fetchQuota(OPTIONS);
+
+    expect(report.state.status).toBe("fresh");
+    expect(report.state.authStatus).toBe("usable");
+    expect(report.plan).toBe("pro");
+    expect(report.windows).toEqual([]);
+    expect(report.state.untrustedWindowIds).toBeUndefined();
+    const serialized = JSON.stringify(report);
+    for (const sentinel of SENTINELS) expect(serialized).not.toContain(sentinel);
+    expect(serialized).not.toContain("SENTINELPM");
+    expect(serialized).not.toContain("SENTINEL-TIER-ID01");
+  });
+
   it("clears this credential's cached windows when the subscription is inactive", async () => {
     useDiskCache();
     let now = NOW;

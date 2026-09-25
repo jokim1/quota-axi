@@ -951,7 +951,8 @@ function rejectHttpFailure(response: Response, receivedAt: number): never {
 
 /**
  * The subscription's `window` (the rolling window, 300 minutes on the plans
- * observed) and `weekly` usage. Absent entries stay absent. An entry that is
+ * observed) and `weekly` usage. Absent entries stay absent, including an
+ * omitted or null `subs_usage` on an otherwise valid body. An entry that is
  * present but carries no usable `used_percent` is named in
  * `untrustedWindowIds` instead of guessed at, and a reset the vendor reports as
  * already passed publishes no live window. An inactive subscription reports no
@@ -979,7 +980,9 @@ export function normalizeMusePayload(
 
   const usage = objectValue(root.subs_usage);
   if (!usage) {
-    result.untrustedWindowIds.push("subs_usage");
+    // Omitted or null means the vendor supplied no windows. A present
+    // non-object is untrusted because it cannot be read as usage.
+    if (root.subs_usage != null) result.untrustedWindowIds.push("subs_usage");
     return result;
   }
 
