@@ -46,6 +46,8 @@ import {
 
 export const MUSE_API_ORIGIN = "https://api.meta.ai";
 export const MUSE_KEY_PATH = "/muse-code/key";
+/** The Muse CLI sends this on every mint, including startup `{ onboard: false }`. */
+export const MUSE_API_VERSION = "1.0.0";
 
 export const MUSE_AUTH_FILE_SOURCE = "muse:auth.json";
 export const MUSE_API_KEY_SOURCE = "env:META_API_KEY";
@@ -821,9 +823,10 @@ function retireRejectedCache(
 
 /**
  * The one request: the call the Muse CLI makes at startup, `POST
- * /muse-code/key` with `{"onboard": false}`. The response carries the
- * account's Model API key alongside the subscription usage; only the usage keys survive
- * parsing, and no response body ever reaches an error or a log.
+ * /muse-code/key` with `{"onboard": false}` and `x-api-version: 1.0.0`. The
+ * response carries the account's Model API key alongside the subscription
+ * usage; only the usage keys survive parsing, and no response body ever
+ * reaches an error or a log.
  */
 async function requestKeyUsage(
   credential: string,
@@ -868,6 +871,7 @@ async function sendKeyUsageRequest(
         "Content-Type": "application/json",
         Accept: "application/json",
         "User-Agent": USER_AGENT,
+        "x-api-version": MUSE_API_VERSION,
       },
       body: JSON.stringify({ onboard: false }),
       credentials: "omit",

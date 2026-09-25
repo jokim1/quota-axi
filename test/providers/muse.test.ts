@@ -23,6 +23,7 @@ import {
   createMuseApiKeySource,
   createMuseAuthFileSource,
   MUSE_API_KEY_SOURCE,
+  MUSE_API_VERSION,
   MUSE_AUTH_FILE_SOURCE,
   MUSE_KEY_PATH,
   MUSE_SOURCE_ORDER,
@@ -128,9 +129,9 @@ describe("Muse request transport", () => {
       redirect: "manual",
       credentials: "omit",
     });
-    expect(new Headers(init?.headers).get("authorization")).toBe(
-      `Bearer ${ACCESS_TOKEN}`,
-    );
+    const headers = new Headers(init?.headers);
+    expect(headers.get("authorization")).toBe(`Bearer ${ACCESS_TOKEN}`);
+    expect(headers.get("x-api-version")).toBe(MUSE_API_VERSION);
   });
 
   it("declares the Muse CLI sign-in stores before the exported key", () => {
