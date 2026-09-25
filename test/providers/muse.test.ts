@@ -297,6 +297,48 @@ describe("Muse credential matrix", () => {
     expect(JSON.stringify(request.mock.calls)).not.toContain(REFRESH_TOKEN);
   });
 
+  it("refreshable expiry serves the rejected source's snapshot stale", async () => {
+    const deleteCachedProvider = vi.fn();
+    const report = await testAdapter({
+      sources: [
+        authFileSource(authStore(ACCESS_TOKEN, REFRESH_TOKEN)),
+        apiKeySource(undefined),
+      ],
+      fetch: sequentialFetch([new Response(null, { status: 401 })]),
+      readCachedProvider: (contextId) =>
+        contextId === museCacheContextId(MUSE_AUTH_FILE_SOURCE, ACCESS_TOKEN)
+          ? cachedQuota()
+          : undefined,
+      deleteCachedProvider,
+    }).fetchQuota(OPTIONS);
+
+    expect(report.source).toBe("cache");
+    expect(report.windows).toEqual(EXPECTED_WINDOWS);
+    expect(report.state).toMatchObject({
+      status: "stale",
+      stale: true,
+      authStatus: "expired_refreshable",
+      error: "muse_access_token_rejected",
+    });
+    expect(deleteCachedProvider).not.toHaveBeenCalled();
+  });
+
+  it("does not serve a stale snapshot whose refreshedAt is after now", async () => {
+    const cached = cachedQuota();
+    cached.state.refreshedAt = new Date(NOW + 60_000).toISOString();
+    const report = await testAdapter({
+      fetch: sequentialFetch([new Response(null, { status: 503 })]),
+      readCachedProvider: () => cached,
+    }).fetchQuota(OPTIONS);
+
+    expect(report.source).toBe("unavailable");
+    expect(report.windows).toEqual([]);
+    expect(report.state).toMatchObject({
+      status: "error",
+      error: "provider_unavailable",
+    });
+  });
+
   it("transient failure stops handover: no auth verdict, and the credential's own snapshot is served stale", async () => {
     const request = sequentialFetch([new Response(null, { status: 503 })]);
     const report = await testAdapter({
@@ -816,6 +858,32 @@ describe("Muse credential and account data never leave the process", () => {
         expect(everything).not.toContain(sentinel);
     },
   );
+
+  it("does not reuse a Muse reading through --max-age", async () => {
+    useDiskCache();
+    const request = sequentialFetch([
+      jsonResponse(liveKeyResponse()),
+      jsonResponse(liveKeyResponse()),
+    ]);
+    PROVIDERS.muse = createMuseAdapter({
+      sources: [authFileSource(authStore()), apiKeySource(undefined)],
+      fetch: request as unknown as typeof fetch,
+      ledger: openLedger(),
+    });
+
+    const read = async () =>
+      JSON.parse(
+        await capture(["--provider", "muse", "--json", "--max-age", "1h"]),
+      ) as { providers: ProviderQuota[] };
+    const first = await read();
+    const second = await read();
+
+    expect(first.providers[0]?.state.status).toBe("fresh");
+    expect(first.providers[0]?.state.reused).toBeUndefined();
+    expect(second.providers[0]?.state.reused).toBeUndefined();
+    expect(second.providers[0]?.state.status).toBe("fresh");
+    expect(request).toHaveBeenCalledTimes(2);
+  });
 
   it("never writes the Muse CLI's credential store", async () => {
     const store = join(directory, "config", "muse", "auth.json");

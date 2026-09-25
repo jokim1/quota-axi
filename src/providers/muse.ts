@@ -12,6 +12,7 @@ import type {
   AuthProviderReport,
   AuthSourceReport,
   ProviderAdapter,
+  ProviderAuthStatus,
   ProviderOptions,
   ProviderQuota,
   ProviderStatus,
@@ -19,6 +20,7 @@ import type {
   SourceAttempt,
 } from "../types.js";
 import { VERSION } from "../version.js";
+import { servableStaleWindows, servableUntrustedWindowIds } from "./common.js";
 import {
   selectCredential,
   type AttemptOutcome,
@@ -117,6 +119,7 @@ export type MuseCredentialSource = {
   location(): string;
   resolve(
     options: Pick<ProviderOptions, "allowKeychainPrompt">,
+    presenceOnly?: boolean,
   ): Promise<MuseLocalResolution>;
 };
 
@@ -243,7 +246,8 @@ export function createMuseKeychainSource(): MuseCredentialSource {
   return {
     name: MUSE_KEYCHAIN_SOURCE,
     location: () => "Keychain ai.meta.dev.credentials",
-    resolve: (options) => readMuseKeychainCredential(options),
+    resolve: (options, presenceOnly) =>
+      readMuseKeychainCredential(options, presenceOnly === true),
   };
 }
 
@@ -303,8 +307,8 @@ export function createMuseAdapter(
       inFlight = acquisition;
       return acquisition;
     },
-    inspectAuth(_options: ProviderOptions): Promise<AuthProviderReport> {
-      return inspectAuth(dependencies);
+    inspectAuth(options: ProviderOptions): Promise<AuthProviderReport> {
+      return inspectAuth(dependencies, options);
     },
   };
 }
@@ -314,12 +318,15 @@ export const museAdapter = createMuseAdapter();
 /** Local only: `auth` never contacts the key endpoint, so it never issues a key. */
 async function inspectAuth(
   dependencies: MuseDependencies,
+  options: ProviderOptions,
 ): Promise<AuthProviderReport> {
   const sources: AuthSourceReport[] = [];
   for (const source of dependencies.sources) {
-    const resolution = await resolveSource(source, {
-      allowKeychainPrompt: false,
-    });
+    const resolution = await resolveSource(
+      source,
+      options,
+      !options.allowKeychainPrompt,
+    );
     const path = safeLocation(source);
     sources.push({
       source: source.name,
@@ -446,16 +453,25 @@ async function acquireMuseQuota(
     const failure = selection.refreshable
       ? new MuseFailure("muse_access_token_rejected", {
           status: "unavailable",
-          staleEligible: false,
+          staleEligible: true,
         })
       : new MuseFailure("muse_access_token_rejected", {
           status: "auth_required",
           definitiveAuth: true,
         });
     if (!selection.refreshable) retireRejectedCache(contexts, dependencies);
-    return failureReport(failure, undefined, attempts, dependencies, {
-      authStatus: selection.refreshable ? "expired_refreshable" : "unusable",
-    });
+    const rejected = selection.results.find(
+      (result) => result.outcome === "rejected",
+    );
+    return failureReport(
+      failure,
+      rejected ? contexts.get(rejected.source) : undefined,
+      attempts,
+      dependencies,
+      {
+        authStatus: selection.refreshable ? "expired_refreshable" : "unusable",
+      },
+    );
   }
 
   if (skippedCredentialError && localError === undefined) {
@@ -708,21 +724,27 @@ function failureReport(
   overrides: { authStatus?: "expired_refreshable" | "unusable" } = {},
 ): ProviderQuota {
   const sourcesTried = attempts.map(({ source }) => source);
+  const authStatus: ProviderAuthStatus | undefined =
+    overrides.authStatus ??
+    (failure.authUsable
+      ? "usable"
+      : failure.definitiveAuth
+        ? "unusable"
+        : undefined);
   if (failure.staleEligible && contextId) {
     const cached = safeReadCache(dependencies, contextId);
     const stale = cached
-      ? staleMuseReport(cached, failure, attempts, dependencies.now())
+      ? staleMuseReport(
+          cached,
+          failure,
+          attempts,
+          dependencies.now(),
+          authStatus,
+        )
       : undefined;
     if (stale) return stale;
   }
 
-  const authStatus =
-    overrides.authStatus ??
-    (failure.authUsable
-      ? ("usable" as const)
-      : failure.definitiveAuth
-        ? ("unusable" as const)
-        : undefined);
   return {
     provider: "muse",
     label: LABEL,
@@ -745,6 +767,7 @@ function staleMuseReport(
   failure: MuseFailure,
   attempts: SourceAttempt[],
   now: number,
+  authStatus: ProviderAuthStatus | undefined,
 ): ProviderQuota | undefined {
   if (
     cached.provider !== "muse" ||
@@ -755,20 +778,9 @@ function staleMuseReport(
     return undefined;
   const refreshedAt = Date.parse(cached.state.refreshedAt);
   if (!Number.isFinite(refreshedAt)) return undefined;
-  const ageMilliseconds = Math.max(0, now - refreshedAt);
-  // A window whose own reset has passed describes a finished window. Without a
-  // reset, a window outlives its reading by at most its own length.
-  const windows = cached.windows.filter((window) => {
-    if (window.resetsAt) {
-      const resetsAt = Date.parse(window.resetsAt);
-      return Number.isFinite(resetsAt) && resetsAt > now;
-    }
-    return (
-      window.windowSeconds !== undefined &&
-      ageMilliseconds < window.windowSeconds * 1_000
-    );
-  });
+  const windows = servableStaleWindows(cached, now);
   if (windows.length === 0) return undefined;
+  const untrustedWindowIds = servableUntrustedWindowIds(cached, windows);
 
   return {
     provider: "muse",
@@ -781,11 +793,9 @@ function staleMuseReport(
       stale: true,
       refreshedAt: cached.state.refreshedAt,
       error: failure.code,
-      ...(failure.authUsable ? { authStatus: "usable" as const } : {}),
+      ...(authStatus ? { authStatus } : {}),
       ...(failure.retryAfter ? { retryAfter: failure.retryAfter } : {}),
-      ...(cached.state.untrustedWindowIds
-        ? { untrustedWindowIds: cached.state.untrustedWindowIds }
-        : {}),
+      ...(untrustedWindowIds ? { untrustedWindowIds } : {}),
       sourcesTried: [...attempts.map(({ source }) => source), "cache"],
     },
     attempts,
@@ -1059,9 +1069,10 @@ function readableHours(windowSeconds: number): string {
 async function resolveSource(
   source: MuseCredentialSource,
   options: Pick<ProviderOptions, "allowKeychainPrompt">,
+  presenceOnly = false,
 ): Promise<MuseLocalResolution> {
   try {
-    return await source.resolve(options);
+    return await source.resolve(options, presenceOnly);
   } catch {
     return { status: "read_error", error: "credential_resolution_failed" };
   }

@@ -214,7 +214,7 @@ export function readReusableProviders(
   now: number = Date.now(),
   contextId: string = reuseContextId(),
 ): ProviderQuota[] | undefined {
-  if (!(maxAgeSeconds > 0)) return undefined;
+  if (!(maxAgeSeconds > 0) || excludeFromFreshReuse(provider)) return undefined;
   const records = readCacheProviders().filter(
     (record) =>
       record.snapshot.provider === provider &&
@@ -543,6 +543,7 @@ function reuseStampsFor(
   const stamps = new Map<ProviderQuota, ReuseStamp>();
   let context: string | undefined;
   for (const id of new Set(providers.map((provider) => provider.provider))) {
+    if (excludeFromFreshReuse(id)) continue;
     const lanes = providers.filter((provider) => provider.provider === id);
     const inputs = (lanes[0] as TracedQuota)[READING_INPUTS];
     if (
@@ -582,6 +583,10 @@ function isCacheExcluded(provider: ProviderQuota): boolean {
     (provider.provider === "claude" || provider.provider === "copilot") &&
     provider.source === "cli"
   );
+}
+
+function excludeFromFreshReuse(provider: ProviderId): boolean {
+  return provider === "muse";
 }
 
 function cacheIdentity(provider: ProviderQuota): string {

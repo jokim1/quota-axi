@@ -32,8 +32,10 @@ export function museReadingContextId(): string | undefined {
  * attempt ledger, is never rendered, and is never logged: only this digest is,
  * and it cannot be reversed to the credential.
  *
- * The Muse CLI rewrites its access token when it refreshes, which produces a
- * new identity: a cache miss, never a cross-attribution between accounts.
+ * Interval replay and stale fallback require this identity to match, so a
+ * token the Muse CLI has since refreshed is a cache miss, never a
+ * cross-attribution between accounts. Muse is excluded from `--max-age`
+ * fresh reuse, which cannot see a Keychain login switch.
  */
 export function museCacheContextId(source: string, credential: string): string {
   const credentialDigest = createHash("sha256")

@@ -298,6 +298,48 @@ describe("Muse Keychain credential source", () => {
     expect(calls.calls.every((call) => !call.args.includes("-w"))).toBe(true);
   });
 
+  it("auth --allow-keychain-prompt reads the item and reports available", async () => {
+    const calls = mockSecurity({ bundle: bundle() });
+    const muse = await museModule();
+    const adapter = muse.createMuseAdapter({
+      sources: [muse.createMuseKeychainSource()],
+    });
+    const report = await adapter.inspectAuth(PROMPT_OPTIONS);
+    expect(report.sources).toEqual([
+      {
+        source: "cli-keychain",
+        path: "Keychain ai.meta.dev.credentials",
+        status: "available",
+      },
+    ]);
+    expect(calls.calls.some((call) => call.args.includes("-w"))).toBe(true);
+    expect(JSON.stringify(report)).not.toContain(ACCESS_TOKEN);
+    expect(JSON.stringify(report)).not.toContain(MINTED_API_KEY);
+  });
+
+  it("auth does not fetch the bundle from a leftover grant marker", async () => {
+    const calls = mockSecurity({ bundle: bundle() });
+    const muse = await museModule();
+    const { museKeychainAccessMarkerPath } =
+      await import("../../src/lib/fs.js");
+    const marker = museKeychainAccessMarkerPath(
+      "ai.meta.dev.credentials",
+      "meta",
+    );
+    mkdirSync(dirname(marker), { recursive: true });
+    writeFileSync(marker, "granted\n", { mode: 0o600 });
+    const adapter = muse.createMuseAdapter({
+      sources: [muse.createMuseKeychainSource()],
+    });
+    const report = await adapter.inspectAuth(OPTIONS);
+    expect(report.sources[0]).toMatchObject({
+      source: "cli-keychain",
+      status: "skipped",
+      error: "keychain_prompt_required",
+    });
+    expect(calls.calls.every((call) => !call.args.includes("-w"))).toBe(true);
+  });
+
   it("a prompt-blocked Muse report earns the keychain advice", async () => {
     mockSecurity({ bundle: bundle() });
     const muse = await museModule();

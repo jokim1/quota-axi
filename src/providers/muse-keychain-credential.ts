@@ -22,9 +22,12 @@ import type { ProviderOptions } from "../types.js";
  * never reaches an object, an error, or any output. A sibling `refresh_token`
  * is checked for presence only. The value read follows the same
  * `--allow-keychain-prompt` gate as the Claude and Cursor CLI Keychain
- * sources: a plain call checks item presence only (no `-w`, never prompts),
- * and a successful value read records a non-secret marker so later plain
- * calls may reuse the existing grant.
+ * sources: a plain quota call checks item presence only (no `-w`, never
+ * prompts), and a successful value read records a non-secret marker so later
+ * plain quota calls may reuse the existing grant. `auth` passes
+ * `presenceOnly` when the flag is off so that leftover marker never triggers
+ * a value read: the report only emits status, and the bundle carries the
+ * minted API key.
  */
 export const MUSE_KEYCHAIN_SOURCE = "cli-keychain";
 export const MUSE_KEYCHAIN_SERVICE = "ai.meta.dev.credentials";
