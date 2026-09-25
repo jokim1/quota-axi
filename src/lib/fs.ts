@@ -139,10 +139,7 @@ export function museKeychainAccessMarkerPath(
   return join(cacheDirPath(), `muse-keychain-access-granted-${suffix}`);
 }
 
-/**
- * Muse's key-endpoint attempt ledger. It holds only opaque credential-context
- * digests, attempt timestamps, and an outcome class, never credential material.
- */
+/** Path of Muse's key-endpoint attempt ledger, beside the quota cache. */
 export function museKeyReadLedgerPath(): string {
   return join(cacheDirPath(), "muse-key-reads.json");
 }

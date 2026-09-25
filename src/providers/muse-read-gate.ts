@@ -111,7 +111,11 @@ function readLedger(file: string): Map<string, MuseKeyRead> {
         ? Date.parse(entry.attemptedAt)
         : Number.NaN;
     const outcome = OUTCOMES.find((value) => value === entry.outcome);
-    if (!CONTEXT_ID.test(contextId) || !Number.isFinite(attemptedAt) || !outcome)
+    if (
+      !CONTEXT_ID.test(contextId) ||
+      !Number.isFinite(attemptedAt) ||
+      !outcome
+    )
       continue;
     const emptyQuota =
       outcome === "quota" ? parseEmptyQuota(entry.emptyQuota) : undefined;
