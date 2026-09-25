@@ -1,4 +1,5 @@
 import { chmodSync, renameSync, writeFileSync } from "node:fs";
+import { withLockSync } from "../lib/fetch-lock.js";
 import {
   ensurePrivateParent,
   museKeyReadLedgerPath,
@@ -15,11 +16,12 @@ import {
  * use with no documented rotation cadence. quota-axi therefore treats every
  * request as an action on a credential it does not own, and bounds it: one
  * request per credential per interval, whatever the outcome, across every
- * quota-axi process sharing the cache directory. Inside the interval the
- * adapter replays what the last request established - its own cached reading,
- * its empty successful observation, its rejection, or a deferred read - and
- * sends nothing. The interval equals the `--tui` default refresh, so a live
- * report issues at most one request per
+ * quota-axi process sharing the cache directory. The interval check and the
+ * `pending` claim are one locked step; a claim that cannot be recorded does
+ * not send. Inside the interval the adapter replays what the last request
+ * established - its own cached reading, its empty successful observation, its
+ * rejection, or a deferred read - and sends nothing. The interval equals the
+ * `--tui` default refresh, so a live report issues at most one request per
  * refresh and a burst of agent calls issues one request in total.
  */
 export const MUSE_KEY_READ_INTERVAL_MS = 5 * 60_000;
@@ -45,6 +47,17 @@ export type MuseKeyRead = {
 };
 
 /**
+ * Atomic check-then-claim for one credential. `recent` means another request
+ * in this interval already owns the gate; `claimed` means this caller wrote
+ * `pending` and may send; `unwritable` means the claim could not be recorded,
+ * so the request must not leave.
+ */
+export type MuseKeyReadClaim =
+  | { kind: "recent"; read: MuseKeyRead }
+  | { kind: "claimed" }
+  | { kind: "unwritable" };
+
+/**
  * Per-credential record of the last key-endpoint request. Keys are opaque
  * `museCacheContextId` digests and values are timestamps plus an outcome class,
  * so the ledger holds no credential material and names no account. A quota
@@ -53,6 +66,7 @@ export type MuseKeyRead = {
 export type MuseKeyReadLedger = {
   recent(contextId: string, now: number): MuseKeyRead | undefined;
   record(contextId: string, read: MuseKeyRead): void;
+  claim(contextId: string, now: number): MuseKeyReadClaim;
 };
 
 const LEDGER_SCHEMA_VERSION = 1;
@@ -76,16 +90,54 @@ export function createFileMuseKeyReadLedger(
     record(contextId, read) {
       if (!CONTEXT_ID.test(contextId)) return;
       const file = path();
-      const current = now();
-      const reads = new Map(
-        [...readLedger(file)].filter(([, entry]) =>
-          withinInterval(entry, current),
-        ),
-      );
-      reads.set(contextId, persistedRead(read));
-      writeLedger(file, reads);
+      withLockedLedger(file, () => {
+        writeEntry(file, contextId, read, now());
+      });
+    },
+    claim(contextId, at) {
+      if (!CONTEXT_ID.test(contextId)) return { kind: "unwritable" };
+      const file = path();
+      try {
+        return withLockedLedger(file, () => {
+          const existing = readLedger(file).get(contextId);
+          if (existing && withinInterval(existing, at))
+            return { kind: "recent", read: existing };
+          writeEntry(
+            file,
+            contextId,
+            { attemptedAt: at, outcome: "pending" },
+            now(),
+          );
+          return { kind: "claimed" };
+        });
+      } catch {
+        return { kind: "unwritable" };
+      }
     },
   };
+}
+
+/**
+ * Serialize every ledger mutation. The command-level fetch lock is not held
+ * when `--max-age` is unset, so this is the gate that keeps two processes from
+ * both seeing an empty interval and both POSTing. Fail closed: if the lock
+ * cannot be taken, the caller must not send.
+ */
+function withLockedLedger<T>(file: string, fn: () => T): T {
+  return withLockSync(`${file}.lock`, fn, { onUnavailable: "throw" });
+}
+
+function writeEntry(
+  file: string,
+  contextId: string,
+  read: MuseKeyRead,
+  now: number,
+): void {
+  const reads = new Map(
+    [...readLedger(file)].filter(([, entry]) => withinInterval(entry, now)),
+  );
+  reads.set(contextId, persistedRead(read));
+  writeLedger(file, reads);
 }
 
 /**

@@ -42,6 +42,7 @@ import {
   MUSE_KEY_READ_INTERVAL_MS,
   type MuseEmptyQuota,
   type MuseKeyRead,
+  type MuseKeyReadClaim,
   type MuseKeyReadLedger,
 } from "./muse-read-gate.js";
 
@@ -488,8 +489,18 @@ async function acquireMuseQuota(
     );
   }
 
+  if (localError) {
+    // A present store that could not be read or parsed is not sign-out: the
+    // user may still be signed in, and the file error is the report.
+    return failureReport(
+      new MuseFailure(localError),
+      undefined,
+      attempts,
+      dependencies,
+    );
+  }
   return failureReport(
-    new MuseFailure(localError ?? "muse_credential_unavailable", {
+    new MuseFailure("muse_credential_unavailable", {
       status: "auth_required",
       definitiveAuth: true,
     }),
@@ -502,8 +513,9 @@ async function acquireMuseQuota(
 /**
  * One candidate's turn. The ledger decides first: inside the interval nothing
  * is sent and the last request's outcome is replayed. Otherwise the request is
- * recorded as pending before it leaves, so a crash or timeout mid-request still
- * counts against the interval.
+ * claimed as pending in the same locked step that checked the interval, so two
+ * processes cannot both POST, and a crash or timeout mid-request still counts.
+ * A claim that cannot be recorded does not send.
  */
 async function attemptCandidate(
   candidate: CredentialCandidate<MuseCandidate>,
@@ -511,13 +523,18 @@ async function attemptCandidate(
 ): Promise<{ outcome: AttemptOutcome<MuseReading>; failure?: MuseFailure }> {
   const { credential, contextId } = candidate.credential;
   const startedAt = dependencies.now();
-  const recent = safeRecent(dependencies.ledger, contextId, startedAt);
-  if (recent) return replay(recent, contextId, dependencies);
-
-  safeRecord(dependencies.ledger, contextId, {
-    attemptedAt: startedAt,
-    outcome: "pending",
-  });
+  const claimed = claimRead(dependencies.ledger, contextId, startedAt);
+  if (claimed.kind === "recent")
+    return replay(claimed.read, contextId, dependencies);
+  if (claimed.kind === "unwritable") {
+    const failure = new MuseFailure("muse_read_unrecorded", {
+      staleEligible: true,
+    });
+    return {
+      outcome: { kind: "transient", error: failure.code },
+      failure,
+    };
+  }
   try {
     const payload = await requestKeyUsage(credential, dependencies);
     const refreshedAt = dependencies.now();
@@ -1013,8 +1030,9 @@ function rejectHttpFailure(response: Response, receivedAt: number): never {
  * omitted or null `subs_usage` on an otherwise valid body. An entry that is
  * present but carries no usable `used_percent` is named in
  * `untrustedWindowIds` instead of guessed at, and a reset the vendor reports as
- * already passed publishes no live window. An inactive subscription reports no
- * window at all.
+ * already passed publishes no live window and is named there so the remaining
+ * window cannot stand in as a definitive bound. An inactive subscription
+ * reports no window at all.
  */
 export function normalizeMusePayload(
   payload: unknown,
@@ -1106,7 +1124,10 @@ function pushWindow(
     return;
   }
   const resetsAt = parseResetSeconds(entry?.resets_at);
-  if (resetsAt !== undefined && Date.parse(resetsAt) <= now) return;
+  if (resetsAt !== undefined && Date.parse(resetsAt) <= now) {
+    result.untrustedWindowIds.push(identity.id);
+    return;
+  }
   const percentUsed = Math.min(100, Number(used.toFixed(10)));
   result.windows.push({
     ...identity,
@@ -1148,21 +1169,21 @@ function safeLocation(source: MuseCredentialSource): string | undefined {
   }
 }
 
-function safeRecent(
+function claimRead(
   ledger: MuseKeyReadLedger,
   contextId: string,
   now: number,
-): MuseKeyRead | undefined {
+): MuseKeyReadClaim {
   try {
-    return ledger.recent(contextId, now);
+    return ledger.claim(contextId, now);
   } catch {
-    return undefined;
+    return { kind: "unwritable" };
   }
 }
 
 /**
- * Best effort: an unwritable cache directory cannot record the interval, and
- * the adapter still sends at most one request per invocation.
+ * Best effort for the outcome after a recorded claim. The pending entry still
+ * gates the interval if this write cannot land.
  */
 function safeRecord(
   ledger: MuseKeyReadLedger,

@@ -111,7 +111,11 @@ async function keychainAdapter(
       sequentialFetch([jsonResponse(KEY_RESPONSE)])) as typeof fetch,
     readCachedProvider: () => undefined,
     deleteCachedProvider: () => undefined,
-    ledger: { recent: () => undefined, record: () => undefined },
+    ledger: {
+      recent: () => undefined,
+      record: () => undefined,
+      claim: () => ({ kind: "claimed" as const }),
+    },
     now: () => NOW,
   });
   return { adapter, calls: calls.calls };
@@ -219,7 +223,11 @@ describe("Muse Keychain credential source", () => {
       fetch: sequentialFetch([jsonResponse(KEY_RESPONSE)]) as typeof fetch,
       readCachedProvider: () => undefined,
       deleteCachedProvider: () => undefined,
-      ledger: { recent: () => undefined, record: () => undefined },
+      ledger: {
+        recent: () => undefined,
+        record: () => undefined,
+        claim: () => ({ kind: "claimed" as const }),
+      },
       now: () => NOW,
     });
     const report = await adapter.fetchQuota(OPTIONS);
@@ -262,7 +270,8 @@ describe("Muse Keychain credential source", () => {
       fetchMock,
     );
     const report = await adapter.fetchQuota(PROMPT_OPTIONS);
-    expect(report.state.status).toBe("auth_required");
+    expect(report.state.status).toBe("error");
+    expect(report.state.authStatus).toBeUndefined();
     expect(report.state.error).toBe("muse_keychain_invalid");
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -364,7 +373,11 @@ describe("Muse Keychain credential source", () => {
       fetch: fetchMock as typeof fetch,
       readCachedProvider: () => undefined,
       deleteCachedProvider,
-      ledger: { recent: () => undefined, record: () => undefined },
+      ledger: {
+        recent: () => undefined,
+        record: () => undefined,
+        claim: () => ({ kind: "claimed" as const }),
+      },
       now: () => NOW,
     });
     const report = await adapter.fetchQuota(OPTIONS);

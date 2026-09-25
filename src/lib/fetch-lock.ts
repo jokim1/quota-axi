@@ -40,6 +40,12 @@ export type FetchTurnOptions = {
   waitMs?: number;
   pollMs?: number;
   staleMs?: number;
+  /**
+   * When no lock can be taken here, or the wait runs out: `run` executes `fn`
+   * unlocked (cache writes; an extra vendor read is the cost), `throw` fails
+   * closed (Muse's key-read claim must not proceed without exclusive access).
+   */
+  onUnavailable?: "run" | "throw";
 };
 
 /**
@@ -107,8 +113,9 @@ export async function takeFetchTurn<T>(
 /**
  * Run `fn` while holding the lock at `path`, for a critical section as short
  * as a file's read-modify-write. It waits synchronously and takes over an
- * abandoned lock as `takeFetchTurn` does; when the wait runs out, or no lock
- * can be taken here, `fn` runs unlocked.
+ * abandoned lock as `takeFetchTurn` does. By default, when the wait runs out
+ * or no lock can be taken here, `fn` runs unlocked; pass `onUnavailable:
+ * "throw"` to fail closed instead.
  */
 export function withLockSync<T>(
   path: string,
@@ -117,12 +124,16 @@ export function withLockSync<T>(
     waitMs = SYNC_WAIT_MS,
     pollMs = SYNC_POLL_MS,
     staleMs = STALE_MS,
+    onUnavailable = "run",
   }: FetchTurnOptions = {},
 ): T {
   const deadline = performance.now() + waitMs;
   for (;;) {
     const lock = tryLock(path);
-    if (lock === "unavailable") return fn();
+    if (lock === "unavailable") {
+      if (onUnavailable === "throw") throw lockUnavailable();
+      return fn();
+    }
     if (lock) {
       try {
         return fn();
@@ -130,9 +141,18 @@ export function withLockSync<T>(
         lock.release();
       }
     }
-    if (performance.now() >= deadline) return fn();
+    if (performance.now() >= deadline) {
+      if (onUnavailable === "throw") throw lockUnavailable();
+      return fn();
+    }
     if (settleHolder(path, staleMs) === "held") sleepSync(pollMs);
   }
+}
+
+function lockUnavailable(): Error {
+  return Object.assign(new Error("lock unavailable"), {
+    code: "LOCK_UNAVAILABLE",
+  });
 }
 
 /** The lock file for one provider under one credential selection. */

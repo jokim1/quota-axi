@@ -258,7 +258,8 @@ describe("Muse credential matrix", () => {
       }).fetchQuota(OPTIONS);
 
       expect(request).not.toHaveBeenCalled();
-      expect(report.state.status).toBe("auth_required");
+      expect(report.state.status).toBe("error");
+      expect(report.state.authStatus).toBeUndefined();
       expect(report.state.error).toBe(error);
       expect(report.attempts?.[0]).toEqual({
         source: MUSE_AUTH_FILE_SOURCE,
@@ -268,6 +269,27 @@ describe("Muse credential matrix", () => {
       });
     },
   );
+
+  it("an unreadable auth file with no fallback is an operational failure, not a sign-out", async () => {
+    const request = vi.fn();
+    const report = await testAdapter({
+      sources: [
+        createMuseAuthFileSource(
+          () => "/synthetic/muse/auth.json",
+          async () => {
+            throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+          },
+        ),
+        apiKeySource(undefined),
+      ],
+      fetch: request as unknown as typeof fetch,
+    }).fetchQuota(OPTIONS);
+
+    expect(request).not.toHaveBeenCalled();
+    expect(report.state.status).toBe("error");
+    expect(report.state.authStatus).toBeUndefined();
+    expect(report.state.error).toBe("muse_auth_read_error");
+  });
 
   it.each([
     ["no file", undefined],
@@ -801,6 +823,59 @@ describe("Muse key-endpoint interval", () => {
     expect(left).toBe(right);
   });
 
+  it("serializes same-credential claims so concurrent adapters send one request", async () => {
+    useDiskCache();
+    const request = vi.fn(async () => jsonResponse(KEY_RESPONSE));
+    const left = diskAdapter({ fetch: request as unknown as typeof fetch });
+    const right = diskAdapter({ fetch: request as unknown as typeof fetch });
+
+    await Promise.all([left.fetchQuota(OPTIONS), right.fetchQuota(OPTIONS)]);
+
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send when the pending claim cannot be recorded", async () => {
+    const request = vi.fn();
+    const report = await testAdapter({
+      fetch: request as unknown as typeof fetch,
+      ledger: {
+        recent: () => undefined,
+        record: () => {
+          throw new Error("EACCES");
+        },
+        claim: () => ({ kind: "unwritable" }),
+      },
+    }).fetchQuota(OPTIONS);
+
+    expect(request).not.toHaveBeenCalled();
+    expect(report.state.status).toBe("error");
+    expect(report.state.error).toBe("muse_read_unrecorded");
+    expect(report.state.authStatus).toBeUndefined();
+  });
+
+  it("claim is unwritable when the ledger file cannot be written", () => {
+    useDiskCache();
+    const file = join(directory, "cache", "quota-axi", "muse-key-reads.json");
+    mkdirSync(file, { recursive: true });
+    const ledger = createFileMuseKeyReadLedger(() => file);
+
+    expect(ledger.claim(contextFor(ACCESS_TOKEN), NOW)).toEqual({
+      kind: "unwritable",
+    });
+  });
+
+  it("lets only one of two sequential claims proceed", () => {
+    useDiskCache();
+    const ledger = createFileMuseKeyReadLedger();
+    const contextId = contextFor(ACCESS_TOKEN);
+
+    expect(ledger.claim(contextId, NOW)).toEqual({ kind: "claimed" });
+    expect(ledger.claim(contextId, NOW)).toEqual({
+      kind: "recent",
+      read: { attemptedAt: NOW, outcome: "pending" },
+    });
+  });
+
   it("keeps the ledger private and free of credential material", async () => {
     useDiskCache();
     await diskAdapter().fetchQuota(OPTIONS);
@@ -877,7 +952,7 @@ describe("Muse payload normalization", () => {
     );
 
     expect(normalized.windows).toEqual([]);
-    expect(normalized.untrustedWindowIds).toEqual([]);
+    expect(normalized.untrustedWindowIds).toEqual(["five_hour"]);
   });
 
   it("resolves no reset from milliseconds, null, or a pre-2001 value", () => {
@@ -1011,6 +1086,65 @@ describe("Muse quota semantics", () => {
     ]);
   });
 
+  it("does not report a definitive all_models remaining from weekly alone after the five-hour reset has passed", async () => {
+    const report = withQuotaSemantics(
+      await testAdapter({
+        fetch: sequentialFetch([
+          jsonResponse(
+            withUsage({
+              window: {
+                used_percent: 90,
+                window_duration_mins: 300,
+                resets_at: NOW / 1000 - 1,
+              },
+              weekly: { used_percent: 10, resets_at: NOW / 1000 + 86_400 },
+            }),
+          ),
+        ]),
+      }).fetchQuota(OPTIONS),
+      new Date(NOW).toISOString(),
+    );
+
+    expect(report.windows.map(({ id }) => id)).toEqual(["weekly"]);
+    expect(report.state.untrustedWindowIds).toEqual(["five_hour"]);
+    expect(report.quotaSemantics?.status).toBe("partial");
+    expect(report.quotaSemantics?.unresolvedWindowIds).toEqual(["five_hour"]);
+    expect(
+      report.quotaSemantics?.effectiveAvailability[0]
+        ?.effectivePercentRemaining,
+    ).toBeUndefined();
+    expect(report.quotaSemantics?.effectiveAvailability[0]?.status).toBe(
+      "unknown",
+    );
+  });
+
+  it("does not treat a weekly-only snapshot as a definitive all_models remaining", () => {
+    const report = withQuotaSemantics(
+      {
+        provider: "muse",
+        source: "api",
+        windows: [
+          {
+            id: "weekly",
+            label: "week",
+            kind: "weekly",
+            percentUsed: 10,
+            percentRemaining: 90,
+          },
+        ],
+        state: { status: "fresh", stale: false },
+      },
+      new Date(NOW).toISOString(),
+    );
+
+    expect(report.quotaSemantics?.status).toBe("partial");
+    expect(report.quotaSemantics?.unresolvedWindowIds).toEqual(["five_hour"]);
+    expect(
+      report.quotaSemantics?.effectiveAvailability[0]
+        ?.effectivePercentRemaining,
+    ).toBeUndefined();
+  });
+
   it("leaves the bound non-definitive while an unrecognized or untrusted window could add one", () => {
     const report = withQuotaSemantics(
       {
@@ -1037,6 +1171,7 @@ describe("Muse quota semantics", () => {
     expect(report.quotaSemantics?.status).toBe("partial");
     expect(report.quotaSemantics?.unresolvedWindowIds).toEqual([
       "subs_usage:window",
+      "five_hour",
     ]);
     expect(
       report.quotaSemantics?.effectiveAvailability[0]
@@ -1184,7 +1319,11 @@ function useDiskCache(): void {
 
 /** A ledger that never gates, for tests about a single request's handling. */
 function openLedger(): MuseKeyReadLedger {
-  return { recent: () => undefined, record: () => undefined };
+  return {
+    recent: () => undefined,
+    record: () => undefined,
+    claim: () => ({ kind: "claimed" }),
+  };
 }
 
 function authStore(

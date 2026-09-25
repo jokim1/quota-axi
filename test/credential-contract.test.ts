@@ -683,13 +683,8 @@ describe("credential source contract", { timeout: 30_000 }, () => {
       expect(result.state.status).toBe("auth_required");
     });
 
-    it.each([
-      ["a blank value", "   "],
-      ["an environment reference", "$META_API_KEY"],
-      ["a command reference", "!op read op://vault/key"],
-      ["a control byte", "meta-\u0007-fixture"],
-    ])("never sends %s from META_API_KEY", async (_label, value) => {
-      process.env.META_API_KEY = value;
+    it("never sends a blank META_API_KEY", async () => {
+      process.env.META_API_KEY = "   ";
       const api = stubRejectingKeyEndpoint();
 
       const result = await readQuotaAsLinux();
@@ -697,6 +692,25 @@ describe("credential source contract", { timeout: 30_000 }, () => {
       expect(api.requests).toEqual([]);
       expect(result.state.status).toBe("auth_required");
     });
+
+    it.each([
+      ["an environment reference", "$META_API_KEY"],
+      ["a command reference", "!op read op://vault/key"],
+      ["a control byte", "meta-\u0007-fixture"],
+    ])(
+      "never sends %s from META_API_KEY, and does not call that a sign-out",
+      async (_label, value) => {
+        process.env.META_API_KEY = value;
+        const api = stubRejectingKeyEndpoint();
+
+        const result = await readQuotaAsLinux();
+
+        expect(api.requests).toEqual([]);
+        expect(result.state.status).toBe("error");
+        expect(result.state.error).toBe("meta_api_key_invalid");
+        expect(result.state.authStatus).toBeUndefined();
+      },
+    );
 
     it.each(BROKEN_ENTRIES)(
       "marks a present but unusable meta entry (%s) as a credential that exists, then hands over",
