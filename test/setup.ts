@@ -61,3 +61,9 @@ delete process.env.WINDSURF_API_SERVER_URL;
 // process; tests start from the default and opt in themselves.
 delete process.env.QUOTA_AXI_MAX_AGE;
 delete process.env.QUOTA_AXI_SNAPSHOT;
+
+// No test may send this machine's exported Muse key to the key endpoint: every
+// Muse key-endpoint request also issues an API key on the real account. The
+// CLI login store is already unreachable because XDG_CONFIG_HOME is sandboxed
+// above. Tests that exercise Muse set their own credential environment.
+delete process.env.META_API_KEY;

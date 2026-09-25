@@ -188,7 +188,54 @@ function semanticsFor(
         provider.state.untrustedWindowIds ?? [],
         generatedAt,
       );
+    case "muse":
+      return museSemantics(
+        provider.windows,
+        provider.state.untrustedWindowIds ?? [],
+        generatedAt,
+      );
   }
+}
+
+/**
+ * Muse's key endpoint reports the subscription's rolling five-hour `window`
+ * and its `weekly` usage, and both gate the same subscription usage, so they
+ * jointly bound every model at `all_models` - Kimi's session-plus-week shape.
+ * A window of any other length, or an entry that carried no usable percentage,
+ * is not folded in: it stays unresolved and leaves the bound non-definitive.
+ */
+const MUSE_ACCOUNT_WINDOW_IDS = new Set(["five_hour", "weekly"]);
+
+function museSemantics(
+  windows: QuotaWindow[],
+  untrustedWindowIds: string[],
+  generatedAt: string,
+): QuotaSemantics {
+  const bounds = windows.filter(({ id }) => MUSE_ACCOUNT_WINDOW_IDS.has(id));
+  const unresolvedWindowIds = [
+    ...new Set([
+      ...windows
+        .filter(({ id }) => !MUSE_ACCOUNT_WINDOW_IDS.has(id))
+        .map(({ id }) => id),
+      ...untrustedWindowIds,
+    ]),
+  ];
+  if (unresolvedWindowIds.length > 0) {
+    return {
+      status: "partial",
+      description:
+        "Muse's five-hour and weekly subscription windows are known bounds, but an unrecognized or unparsed window may add a bound, so effective remaining is unknown.",
+      effectiveAvailability:
+        bounds.length > 0
+          ? [unresolvedAvailability("all_models", bounds, unresolvedWindowIds)]
+          : [],
+      unresolvedWindowIds,
+    };
+  }
+  return knownSemantics(
+    bounds.length > 0 ? [availability("all_models", bounds, generatedAt)] : [],
+    "Muse's five-hour and weekly subscription windows jointly bound every model, so effective remaining is the minimum across them.",
+  );
 }
 
 /**

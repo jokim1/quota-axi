@@ -128,6 +128,25 @@ export function copilotCliKeychainAccessMarkerPath(
   return join(cacheDirPath(), `copilot-cli-keychain-access-granted-${suffix}`);
 }
 
+/** Non-secret proof scoped to the exact Muse Keychain service and account. */
+export function museKeychainAccessMarkerPath(
+  service: string,
+  account: string,
+): string {
+  const suffix = createHash("sha256")
+    .update(JSON.stringify([service, account]))
+    .digest("hex");
+  return join(cacheDirPath(), `muse-keychain-access-granted-${suffix}`);
+}
+
+/**
+ * Muse's key-endpoint attempt ledger. It holds only opaque credential-context
+ * digests and attempt timestamps, never credential material.
+ */
+export function museKeyReadLedgerPath(): string {
+  return join(cacheDirPath(), "muse-key-reads.json");
+}
+
 function cacheDirPath(): string {
   const base = process.env.XDG_CACHE_HOME || join(homedir(), ".cache");
   return join(base, "quota-axi");

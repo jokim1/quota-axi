@@ -53,6 +53,7 @@ export const CREDENTIAL_SELECTION_ENV = [
   "ELEVENLABS_API_KEY",
   "WINDSURF_API_KEY",
   "WINDSURF_API_SERVER_URL",
+  "META_API_KEY",
 ] as const;
 
 /**

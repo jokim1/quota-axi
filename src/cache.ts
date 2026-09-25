@@ -12,6 +12,7 @@ import { commandCodeReadingContextId } from "./providers/commandcode-cache-conte
 import { devinReadingContextId } from "./providers/devin-cache-context.js";
 import { elevenLabsReadingContextId } from "./providers/elevenlabs-cache-context.js";
 import { miniMaxReadingContextId } from "./providers/minimax-cache-context.js";
+import { museReadingContextId } from "./providers/muse-cache-context.js";
 import { isPiCodexSource } from "./providers/pi-codex-credential.js";
 import { fetchLockPath, withLockSync } from "./lib/fetch-lock.js";
 import { inputsDigest, type TracedInputs } from "./lib/input-trace.js";
@@ -67,13 +68,14 @@ const CREDENTIAL_CONTEXT_ID = /^[a-f0-9]{64}$/;
  * cache slot alone does not say: a Claude profile selects the credential store,
  * a Kimi Code `config.toml` selects the deployment, Command Code's `whoami`
  * identifies the source-plus-account pair, an ElevenLabs API key is itself the
- * account, MiniMax stamps by credential source plus deployment host, and a
- * Codex slot can be signed in to another ChatGPT account. A snapshot from one
- * such context says nothing about another, so each is stamped on write and
- * checked on stale reuse - strictly for Claude, Kimi, Command Code, MiniMax,
- * ElevenLabs, and Devin, whose identity a reading always has (and which skip
- * write and clear when that identity is missing). Codex can write an unstamped
- * snapshot, but stale reuse requires a matching stored account id.
+ * account, MiniMax stamps by credential source plus deployment host, a Muse
+ * credential is the only local thing naming its subscription, and a Codex slot
+ * can be signed in to another ChatGPT account. A snapshot from one such context
+ * says nothing about another, so each is stamped on write and checked on stale
+ * reuse - strictly for Claude, Kimi, Command Code, MiniMax, ElevenLabs, Devin,
+ * and Muse, whose identity a reading always has (and which skip write and clear
+ * when that identity is missing). Codex can write an unstamped snapshot, but
+ * stale reuse requires a matching stored account id.
  *
  * How that stamp is obtained is not the same question for each. A Claude
  * profile is fixed by this process's own environment, so deriving it here reads
@@ -93,7 +95,10 @@ const CREDENTIAL_CONTEXT_ID = /^[a-f0-9]{64}$/;
  * a one-way digest of the key that answered, because that key is the only thing
  * naming the subscription and its single slot would otherwise be shared by
  * every key. Devin publishes the answering source, host, and a one-way digest
- * of the session token, because a new login replaces that token.
+ * of the session token, because a new login replaces that token. Muse publishes
+ * the same kind of digest for the credential that answered, and additionally
+ * reuses its own fresh snapshot inside the key-endpoint interval, so that
+ * stamp is what keeps a replayed reading on the credential that produced it.
  */
 const CONTEXT_SCOPED_PROVIDERS: Partial<
   Record<ProviderId, (provider: ProviderQuota) => string | undefined>
@@ -105,6 +110,7 @@ const CONTEXT_SCOPED_PROVIDERS: Partial<
   devin: devinReadingContextId,
   codex: codexStampContextId,
   minimax: miniMaxReadingContextId,
+  muse: museReadingContextId,
 };
 
 /**
@@ -436,6 +442,17 @@ export function readCachedDevinProvider(
   return readCachedProviderInContext("devin", contextId);
 }
 
+/**
+ * Muse quota may only be reused when the cache record proves it was captured
+ * with the same credential, so one subscription's windows can never stand in
+ * for another's.
+ */
+export function readCachedMuseProvider(
+  contextId: string,
+): ProviderQuota | undefined {
+  return readCachedProviderInContext("muse", contextId);
+}
+
 function readCachedProviderInContext(
   provider: ProviderId,
   contextId: string,
@@ -663,7 +680,13 @@ function parseCacheProviders(raw: unknown): CachedProvider[] | undefined {
 }
 
 function toCacheProvider(provider: ProviderQuota): CachedProvider | undefined {
-  if (provider.state.status !== "fresh" || provider.windows.length === 0)
+  // A reading served from the cache observed nothing new; rewriting it would
+  // only relabel an old observation.
+  if (
+    provider.state.status !== "fresh" ||
+    provider.windows.length === 0 ||
+    provider.source === "cache"
+  )
     return undefined;
   const snapshot = normalizeCachedProvider(
     {
@@ -689,8 +712,8 @@ function toCacheProvider(provider: ProviderQuota): CachedProvider | undefined {
   )?.snapshot;
   if (!snapshot) return undefined;
   const contextId = CONTEXT_SCOPED_PROVIDERS[provider.provider]?.(provider);
-  // Claude, Kimi, Command Code, MiniMax, ElevenLabs, and Devin require a published
-  // identity; Codex stamps are optional at write time, but an unstamped
+  // Claude, Kimi, Command Code, MiniMax, ElevenLabs, Devin, and Muse require a
+  // published identity; Codex stamps are optional at write time, but an unstamped
   // snapshot cannot be served as stale.
   if (
     provider.provider !== "codex" &&
@@ -705,9 +728,9 @@ function toCacheProvider(provider: ProviderQuota): CachedProvider | undefined {
 }
 
 function missingRequiredContext(provider: ProviderId): boolean {
-  // Codex stamps are optional; Claude, Kimi, Command Code, MiniMax, ElevenLabs,
-  // and Devin must
-  // not clear when the current reading has no published context identity.
+  // Codex stamps are optional; Claude, Kimi, Command Code, MiniMax,
+  // ElevenLabs, Devin, and Muse must not clear when the current reading has
+  // no published context identity.
   if (provider === "codex") return false;
   const scope = CONTEXT_SCOPED_PROVIDERS[provider];
   return scope !== undefined && !scope({ provider } as ProviderQuota);
