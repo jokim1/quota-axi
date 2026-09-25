@@ -340,6 +340,40 @@ describe("Muse Keychain credential source", () => {
     expect(calls.calls.every((call) => !call.args.includes("-w"))).toBe(true);
   });
 
+  it("a prompt-blocked Keychain read is not a sign-out when META_API_KEY is rejected", async () => {
+    const fetchMock = sequentialFetch([new Response(null, { status: 401 })]);
+    const deleteCachedProvider = vi.fn();
+    mockSecurity({ bundle: bundle() });
+    const muse = await museModule();
+    const store = join(directory, "auth.json");
+    writeFileSync(
+      store,
+      JSON.stringify({
+        schema_version: 2,
+        providers: { meta: { mechanism: "oauth", storage: "keychain" } },
+      }),
+    );
+    const adapter = muse.createMuseAdapter({
+      sources: [
+        muse.createMuseAuthFileSource(() => store),
+        muse.createMuseKeychainSource(),
+        muse.createMuseApiKeySource({
+          META_API_KEY: "synthetic-meta-api-key",
+        }),
+      ],
+      fetch: fetchMock as typeof fetch,
+      readCachedProvider: () => undefined,
+      deleteCachedProvider,
+      ledger: { recent: () => undefined, record: () => undefined },
+      now: () => NOW,
+    });
+    const report = await adapter.fetchQuota(OPTIONS);
+    expect(report.state.status).not.toBe("auth_required");
+    expect(report.state.authStatus).not.toBe("unusable");
+    expect(report.state.error).toBe("keychain_prompt_required");
+    expect(deleteCachedProvider).not.toHaveBeenCalled();
+  });
+
   it("a prompt-blocked Muse report earns the keychain advice", async () => {
     mockSecurity({ bundle: bundle() });
     const muse = await museModule();

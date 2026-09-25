@@ -449,6 +449,17 @@ async function acquireMuseQuota(
     return failureReport(failure, contextId, attempts, dependencies);
   }
 
+  if (skippedCredentialError) {
+    // A present credential that may not be read without a granted prompt says
+    // nothing about sign-in state; report the blocked read, never a sign-out.
+    return failureReport(
+      new MuseFailure(skippedCredentialError, { staleEligible: true }),
+      undefined,
+      attempts,
+      dependencies,
+    );
+  }
+
   if (selection.outcome === "all_rejected") {
     const failure = selection.refreshable
       ? new MuseFailure("muse_access_token_rejected", {
@@ -471,17 +482,6 @@ async function acquireMuseQuota(
       {
         authStatus: selection.refreshable ? "expired_refreshable" : "unusable",
       },
-    );
-  }
-
-  if (skippedCredentialError && localError === undefined) {
-    // A present credential that may not be read without a granted prompt says
-    // nothing about sign-in state; report the blocked read, never a sign-out.
-    return failureReport(
-      new MuseFailure(skippedCredentialError, { staleEligible: true }),
-      undefined,
-      attempts,
-      dependencies,
     );
   }
 
