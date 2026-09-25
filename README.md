@@ -370,7 +370,7 @@ A reading is reused only when all of these hold:
 
 The cache keeps one slot per provider lane, so two profiles that alternate each read the vendor; each still reuses its own reading between switches.
 `--full` is the audit tier and account identity and source attempts are never cached, so `QUOTA_AXI_MAX_AGE` does not reach it; it reuses only when `--max-age` is passed explicitly.
-`--profile-only` never reuses, and readings the cache excludes (Claude native inference, Copilot native secure-store readings, and Muse) are never reused.
+`--profile-only` never reuses, and readings the cache excludes (Claude native inference and Copilot native secure-store readings) are never reused.
 With reuse enabled, a live `--tui` reuses on its first frame; a scheduled refresh reuses only a reading younger than the refresh interval, so it never repeats its own previous frame and still reads the vendor at any `--refresh`, unless `--max-age` is passed explicitly.
 Pressing `r` always reads the vendor, because it is an operator asking for a new reading now.
 
