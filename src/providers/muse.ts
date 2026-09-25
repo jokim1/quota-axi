@@ -40,6 +40,7 @@ import {
 import {
   createFileMuseKeyReadLedger,
   MUSE_KEY_READ_INTERVAL_MS,
+  type MuseEmptyQuota,
   type MuseKeyRead,
   type MuseKeyReadLedger,
 } from "./muse-read-gate.js";
@@ -519,10 +520,13 @@ async function attemptCandidate(
   });
   try {
     const payload = await requestKeyUsage(credential, dependencies);
-    const normalized = normalizeMusePayload(payload, dependencies.now());
+    const refreshedAt = dependencies.now();
+    const normalized = normalizeMusePayload(payload, refreshedAt);
+    const emptyQuota = emptyQuotaMarker(normalized, refreshedAt);
     safeRecord(dependencies.ledger, contextId, {
       attemptedAt: startedAt,
       outcome: "quota",
+      ...(emptyQuota ? { emptyQuota } : {}),
     });
     return {
       outcome: {
@@ -530,7 +534,7 @@ async function attemptCandidate(
         result: {
           kind: "fresh",
           payload: normalized,
-          refreshedAt: dependencies.now(),
+          refreshedAt,
         },
       },
     };
@@ -555,9 +559,10 @@ async function attemptCandidate(
 
 /**
  * Replays the last request for this credential without sending another. A
- * reading that request produced is served from its own context-matched
- * snapshot; a rejection stays a rejection; anything else is a deferred read
- * whose `retryAfter` names when the next request may leave.
+ * windowed reading that request produced is served from its own
+ * context-matched snapshot; an empty successful observation is served from
+ * the ledger marker; a rejection stays a rejection; anything else is a
+ * deferred read whose `retryAfter` names when the next request may leave.
  */
 function replay(
   recent: MuseKeyRead,
@@ -580,6 +585,14 @@ function replay(
         outcome: { kind: "quota", result: { kind: "reused", snapshot } },
       };
     }
+    if (recent.emptyQuota) {
+      return {
+        outcome: {
+          kind: "quota",
+          result: replayedEmptyQuota(recent.emptyQuota),
+        },
+      };
+    }
   }
   const retryAfter = new Date(
     recent.attemptedAt + MUSE_KEY_READ_INTERVAL_MS,
@@ -596,11 +609,52 @@ function replay(
   };
 }
 
+function emptyQuotaMarker(
+  payload: NormalizedMusePayload,
+  refreshedAt: number,
+): MuseEmptyQuota | undefined {
+  if (payload.windows.length > 0) return undefined;
+  return {
+    refreshedAt,
+    ...(payload.plan ? { plan: payload.plan } : {}),
+    ...(payload.untrustedWindowIds.length > 0
+      ? { untrustedWindowIds: payload.untrustedWindowIds }
+      : {}),
+  };
+}
+
+function replayedEmptyQuota(emptyQuota: MuseEmptyQuota): MuseReading {
+  return {
+    kind: "reused",
+    snapshot: {
+      provider: "muse",
+      label: LABEL,
+      source: "api",
+      ...(emptyQuota.plan ? { plan: emptyQuota.plan } : {}),
+      windows: [],
+      state: {
+        status: "fresh",
+        stale: false,
+        authStatus: "usable",
+        refreshedAt: new Date(emptyQuota.refreshedAt).toISOString(),
+        ...(emptyQuota.untrustedWindowIds &&
+        emptyQuota.untrustedWindowIds.length > 0
+          ? { untrustedWindowIds: [...emptyQuota.untrustedWindowIds] }
+          : {}),
+        sourcesTried: [],
+      },
+      attempts: [],
+    },
+  };
+}
+
 /**
  * A snapshot the replayed request itself produced (refreshed no earlier than
  * the request left), from the key endpoint, with every window's own reset
  * still ahead. A reset that passed inside the interval means the numbers
- * describe a finished window, so the reading is deferred instead.
+ * describe a finished window, so the reading is deferred instead. An empty
+ * success is not reusable here: it replays from the ledger marker, and a
+ * windowed quota cache miss must not become an empty reading.
  */
 function reusableSnapshot(
   snapshot: ProviderQuota,

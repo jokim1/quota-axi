@@ -69,6 +69,15 @@ const fixture = (name: string): Record<string, unknown> =>
 
 const KEY_RESPONSE = fixture("key-response");
 const INACTIVE = fixture("inactive");
+/** Muse Code 1.4.0 Power Usage mint: active plan, `subs_usage` omitted. */
+const EMPTY_ACTIVE = {
+  api_key: "SENTINEL-MUSE-ISSUED-KEY-must-never-appear",
+  email: "sentinel-muse-user@example.invalid",
+  name: "SENTINEL Muse Display Name",
+  payment_method: { brand: "SENTINEL-CARD-BRAND", last4: "0000" },
+  is_subs_active: true,
+  subs_tier_name: "pro",
+};
 
 const EXPECTED_WINDOWS = [
   {
@@ -501,6 +510,161 @@ describe("Muse key-endpoint interval", () => {
     expect(readCachedMuseProvider(contextFor(ACCESS_TOKEN))?.source).toBe(
       "api",
     );
+  });
+
+  it("replays an empty successful reading inside the interval without sending another request", async () => {
+    useDiskCache();
+    let now = NOW;
+    const request = sequentialFetch([jsonResponse(EMPTY_ACTIVE)]);
+    const adapter = () => diskAdapter({ fetch: request, now: () => now });
+
+    const first = await adapter().fetchQuota(OPTIONS);
+    writeCachedProviders([first]);
+    now += MUSE_KEY_READ_INTERVAL_MS - 1_000;
+    const second = await adapter().fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(first).toMatchObject({
+      source: "api",
+      plan: "pro",
+      windows: [],
+      state: { status: "fresh", stale: false, authStatus: "usable" },
+    });
+    expect(first.state.untrustedWindowIds).toBeUndefined();
+    expect(second).toMatchObject({
+      source: "cache",
+      plan: "pro",
+      windows: [],
+      state: {
+        status: "fresh",
+        stale: false,
+        authStatus: "usable",
+        refreshedAt: first.state.refreshedAt,
+      },
+    });
+    expect(second.state.error).toBeUndefined();
+    expect(second.state.untrustedWindowIds).toBeUndefined();
+    expect(readCachedMuseProvider(contextFor(ACCESS_TOKEN))).toBeUndefined();
+    const ledger = JSON.parse(
+      readFileSync(
+        join(directory, "cache", "quota-axi", "muse-key-reads.json"),
+        "utf8",
+      ),
+    ) as { reads: Record<string, { outcome: string; emptyQuota?: unknown }> };
+    expect(ledger.reads[contextFor(ACCESS_TOKEN)]).toMatchObject({
+      outcome: "quota",
+      emptyQuota: {
+        refreshedAt: new Date(NOW).toISOString(),
+        plan: "pro",
+      },
+    });
+    const contents = JSON.stringify(ledger);
+    for (const sentinel of SENTINELS) expect(contents).not.toContain(sentinel);
+    expect(contents).not.toContain("used_percent");
+    expect(contents).not.toContain("api_key");
+  });
+
+  it("replays an inactive subscription's empty observation inside the interval", async () => {
+    useDiskCache();
+    let now = NOW;
+    const request = sequentialFetch([jsonResponse(INACTIVE)]);
+    const adapter = () => diskAdapter({ fetch: request, now: () => now });
+
+    const first = await adapter().fetchQuota(OPTIONS);
+    writeCachedProviders([first]);
+    now += 1_000;
+    const second = await adapter().fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(first).toMatchObject({
+      source: "api",
+      windows: [],
+      state: { status: "fresh", stale: false, authStatus: "usable" },
+    });
+    expect(first.plan).toBeUndefined();
+    expect(second).toMatchObject({
+      source: "cache",
+      windows: [],
+      state: {
+        status: "fresh",
+        stale: false,
+        authStatus: "usable",
+        refreshedAt: first.state.refreshedAt,
+      },
+    });
+    expect(second.plan).toBeUndefined();
+    expect(second.state.error).toBeUndefined();
+  });
+
+  it("replays a reading whose every reset had already passed", async () => {
+    useDiskCache();
+    let now = NOW;
+    const request = sequentialFetch([
+      jsonResponse({
+        is_subs_active: true,
+        subs_tier_name: "pro",
+        subs_usage: {
+          window: {
+            used_percent: 90,
+            window_duration_mins: 300,
+            resets_at: NOW / 1000 - 1,
+          },
+          weekly: { used_percent: 10, resets_at: NOW / 1000 - 1 },
+        },
+      }),
+    ]);
+    const adapter = () => diskAdapter({ fetch: request, now: () => now });
+
+    const first = await adapter().fetchQuota(OPTIONS);
+    writeCachedProviders([first]);
+    now += 1_000;
+    const second = await adapter().fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(first).toMatchObject({
+      source: "api",
+      plan: "pro",
+      windows: [],
+      state: { status: "fresh", authStatus: "usable" },
+    });
+    expect(second).toMatchObject({
+      source: "cache",
+      plan: "pro",
+      windows: [],
+      state: {
+        status: "fresh",
+        authStatus: "usable",
+        refreshedAt: first.state.refreshedAt,
+      },
+    });
+    expect(second.state.error).toBeUndefined();
+  });
+
+  it("does not invent an empty reading when a windowed quota snapshot is missing", async () => {
+    useDiskCache();
+    const request = sequentialFetch([jsonResponse(KEY_RESPONSE)]);
+    const first = await diskAdapter({ fetch: request }).fetchQuota(OPTIONS);
+
+    expect(first.windows).toEqual(EXPECTED_WINDOWS);
+    expect(readCachedMuseProvider(contextFor(ACCESS_TOKEN))).toBeUndefined();
+    const second = await diskAdapter({ fetch: request }).fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(second.source).toBe("unavailable");
+    expect(second.plan).toBeUndefined();
+    expect(second.windows).toEqual([]);
+    expect(second.state).toMatchObject({
+      status: "unavailable",
+      error: "muse_read_deferred",
+    });
+    expect(
+      JSON.parse(
+        readFileSync(
+          join(directory, "cache", "quota-axi", "muse-key-reads.json"),
+          "utf8",
+        ),
+      ).reads[contextFor(ACCESS_TOKEN)].emptyQuota,
+    ).toBeUndefined();
   });
 
   it("sends the next request once the interval has passed", async () => {

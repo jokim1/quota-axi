@@ -17,23 +17,38 @@ import {
  * request per credential per interval, whatever the outcome, across every
  * quota-axi process sharing the cache directory. Inside the interval the
  * adapter replays what the last request established - its own cached reading,
- * its rejection, or a deferred read - and sends nothing. The interval equals
- * the `--tui` default refresh, so a live report issues at most one request per
+ * its empty successful observation, its rejection, or a deferred read - and
+ * sends nothing. The interval equals the `--tui` default refresh, so a live
+ * report issues at most one request per
  * refresh and a burst of agent calls issues one request in total.
  */
 export const MUSE_KEY_READ_INTERVAL_MS = 5 * 60_000;
 
 export type MuseKeyReadOutcome = "pending" | "quota" | "rejected" | "transient";
 
+/**
+ * Non-secret remainder of a successful key-endpoint reading that published no
+ * windows. The shared quota cache cannot store that observation, so interval
+ * replay reads it from here. Never carries an api_key, token, email, payment
+ * field, or a quota figure.
+ */
+export type MuseEmptyQuota = {
+  refreshedAt: number;
+  plan?: string;
+  untrustedWindowIds?: readonly string[];
+};
+
 export type MuseKeyRead = {
   attemptedAt: number;
   outcome: MuseKeyReadOutcome;
+  emptyQuota?: MuseEmptyQuota;
 };
 
 /**
  * Per-credential record of the last key-endpoint request. Keys are opaque
  * `museCacheContextId` digests and values are timestamps plus an outcome class,
- * so the ledger holds no credential material and names no account.
+ * so the ledger holds no credential material and names no account. A quota
+ * outcome with no windows may also carry `emptyQuota`.
  */
 export type MuseKeyReadLedger = {
   recent(contextId: string, now: number): MuseKeyRead | undefined;
@@ -67,7 +82,7 @@ export function createFileMuseKeyReadLedger(
           withinInterval(entry, current),
         ),
       );
-      reads.set(contextId, read);
+      reads.set(contextId, persistedRead(read));
       writeLedger(file, reads);
     },
   };
@@ -90,13 +105,21 @@ function readLedger(file: string): Map<string, MuseKeyRead> {
   if (!entries) return reads;
   for (const [contextId, raw] of Object.entries(entries)) {
     const entry = objectValue(raw);
+    if (!entry) continue;
     const attemptedAt =
-      typeof entry?.attemptedAt === "string"
+      typeof entry.attemptedAt === "string"
         ? Date.parse(entry.attemptedAt)
         : Number.NaN;
-    const outcome = OUTCOMES.find((value) => value === entry?.outcome);
-    if (CONTEXT_ID.test(contextId) && Number.isFinite(attemptedAt) && outcome)
-      reads.set(contextId, { attemptedAt, outcome });
+    const outcome = OUTCOMES.find((value) => value === entry.outcome);
+    if (!CONTEXT_ID.test(contextId) || !Number.isFinite(attemptedAt) || !outcome)
+      continue;
+    const emptyQuota =
+      outcome === "quota" ? parseEmptyQuota(entry.emptyQuota) : undefined;
+    reads.set(contextId, {
+      attemptedAt,
+      outcome,
+      ...(emptyQuota ? { emptyQuota } : {}),
+    });
   }
   return reads;
 }
@@ -115,6 +138,9 @@ function writeLedger(file: string, reads: Map<string, MuseKeyRead>): void {
             {
               attemptedAt: new Date(read.attemptedAt).toISOString(),
               outcome: read.outcome,
+              ...(read.emptyQuota
+                ? { emptyQuota: serializeEmptyQuota(read.emptyQuota) }
+                : {}),
             },
           ]),
         ),
@@ -127,6 +153,71 @@ function writeLedger(file: string, reads: Map<string, MuseKeyRead>): void {
   chmodSync(temp, 0o600);
   renameSync(temp, file);
   chmodSync(file, 0o600);
+}
+
+function persistedRead(read: MuseKeyRead): MuseKeyRead {
+  const emptyQuota =
+    read.outcome === "quota" ? copyEmptyQuota(read.emptyQuota) : undefined;
+  return {
+    attemptedAt: read.attemptedAt,
+    outcome: read.outcome,
+    ...(emptyQuota ? { emptyQuota } : {}),
+  };
+}
+
+function copyEmptyQuota(
+  empty: MuseEmptyQuota | undefined,
+): MuseEmptyQuota | undefined {
+  if (!empty || !Number.isFinite(empty.refreshedAt)) return undefined;
+  const plan = nonemptyString(empty.plan);
+  const untrustedWindowIds = parseUntrustedWindowIds(empty.untrustedWindowIds);
+  return {
+    refreshedAt: empty.refreshedAt,
+    ...(plan ? { plan } : {}),
+    ...(untrustedWindowIds ? { untrustedWindowIds } : {}),
+  };
+}
+
+function serializeEmptyQuota(empty: MuseEmptyQuota): Record<string, unknown> {
+  return {
+    refreshedAt: new Date(empty.refreshedAt).toISOString(),
+    ...(empty.plan ? { plan: empty.plan } : {}),
+    ...(empty.untrustedWindowIds && empty.untrustedWindowIds.length > 0
+      ? { untrustedWindowIds: [...empty.untrustedWindowIds] }
+      : {}),
+  };
+}
+
+function parseEmptyQuota(raw: unknown): MuseEmptyQuota | undefined {
+  const entry = objectValue(raw);
+  if (!entry) return undefined;
+  const refreshedAt =
+    typeof entry.refreshedAt === "string"
+      ? Date.parse(entry.refreshedAt)
+      : Number.NaN;
+  if (!Number.isFinite(refreshedAt)) return undefined;
+  const plan = nonemptyString(entry.plan);
+  const untrustedWindowIds = parseUntrustedWindowIds(entry.untrustedWindowIds);
+  return {
+    refreshedAt,
+    ...(plan ? { plan } : {}),
+    ...(untrustedWindowIds ? { untrustedWindowIds } : {}),
+  };
+}
+
+function parseUntrustedWindowIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids = value.flatMap((id) => {
+    const text = nonemptyString(id);
+    return text ? [text] : [];
+  });
+  return ids.length > 0 ? ids : undefined;
+}
+
+function nonemptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
