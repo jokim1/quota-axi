@@ -645,6 +645,7 @@ function orderedAttempts(
         source: source.name,
         status: "skipped",
         credentialPresent: true,
+        degraded: false,
       });
     } else {
       attempts.push({

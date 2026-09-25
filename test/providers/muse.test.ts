@@ -165,6 +165,31 @@ describe("Muse credential matrix", () => {
     ]);
   });
 
+  it("an unused later credential is not a degraded source on a healthy reading", async () => {
+    const request = sequentialFetch([jsonResponse(KEY_RESPONSE)]);
+    const report = await testAdapter({
+      sources: [authFileSource(authStore()), apiKeySource(API_KEY)],
+      fetch: request,
+    }).fetchQuota(OPTIONS);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(bearers(request)).toEqual([`Bearer ${ACCESS_TOKEN}`]);
+    expect(report.state.status).toBe("fresh");
+    expect(report.attempts).toEqual([
+      { source: MUSE_AUTH_FILE_SOURCE, status: "success" },
+      {
+        source: MUSE_API_KEY_SOURCE,
+        status: "skipped",
+        credentialPresent: true,
+        degraded: false,
+      },
+    ]);
+    expect(
+      withQuotaSemantics(report, new Date(NOW).toISOString()).state
+        .degradedSources,
+    ).toBeUndefined();
+  });
+
   it("rejected stored token plus live exported key: the key answers and the store reads degraded", async () => {
     const request = sequentialFetch([
       new Response(null, { status: 401 }),
@@ -368,6 +393,7 @@ describe("Muse credential matrix", () => {
         source: MUSE_API_KEY_SOURCE,
         status: "skipped",
         credentialPresent: true,
+        degraded: false,
       },
     ]);
   });
