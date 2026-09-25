@@ -703,11 +703,11 @@ A bounding window with no `resetsAt` at all has not been triggered yet (e.g. a C
 
 In default TOON the scalar is the `spendPriority` column of the scope's `quota[]` row - there is no separate `selection[]` block, at any tier, because the column already carries it. An unmeasurable scalar renders the literal `unknown`, never `0`: `0` is exact utilization, a completely different claim.
 
-| Field                   | Meaning                                                                                                                     |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `status`                | `known` when every bounding window is measurable and no [`boundConflict`](#quota-windows) is disclosed; otherwise `unknown` |
-| `spendPriority`         | The clamped scope scalar. Present only when `status` is `known`                                                             |
-| `unmeasurableWindowIds` | The bounding windows that blocked the scalar. Present whenever one made the scope `unknown`                                 |
+| Field                   | Meaning                                                                                                                                                                                  |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`                | `known` when at least one bounding window is measurable, every other bound is an untriggered zero-use window, and no [`boundConflict`](#quota-windows) is disclosed; otherwise `unknown` |
+| `spendPriority`         | The clamped scope scalar. Present only when `status` is `known`                                                                                                                          |
+| `unmeasurableWindowIds` | The bounding windows that blocked the scalar. Present only when a named bound made the scope `unknown`                                                                                   |
 
 For each bounding window `w` of the scope:
 
