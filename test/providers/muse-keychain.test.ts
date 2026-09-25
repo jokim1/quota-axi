@@ -280,8 +280,8 @@ describe("Muse Keychain credential source", () => {
   });
 
   it("auth reports the Keychain source from presence alone, without a value read", async () => {
-    const muse = await museModule();
     const calls = mockSecurity({ bundle: bundle() });
+    const muse = await museModule();
     const adapter = muse.createMuseAdapter({
       sources: [muse.createMuseKeychainSource()],
     });
