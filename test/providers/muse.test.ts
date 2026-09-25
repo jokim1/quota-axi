@@ -790,7 +790,8 @@ describe("Muse payload normalization", () => {
     expect(report.windows).toEqual([]);
     expect(report.state.untrustedWindowIds).toBeUndefined();
     const serialized = JSON.stringify(report);
-    for (const sentinel of SENTINELS) expect(serialized).not.toContain(sentinel);
+    for (const sentinel of SENTINELS)
+      expect(serialized).not.toContain(sentinel);
     expect(serialized).not.toContain("SENTINELPM");
     expect(serialized).not.toContain("SENTINEL-TIER-ID01");
   });

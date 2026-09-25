@@ -141,7 +141,7 @@ export function museKeychainAccessMarkerPath(
 
 /**
  * Muse's key-endpoint attempt ledger. It holds only opaque credential-context
- * digests and attempt timestamps, never credential material.
+ * digests, attempt timestamps, and an outcome class, never credential material.
  */
 export function museKeyReadLedgerPath(): string {
   return join(cacheDirPath(), "muse-key-reads.json");
