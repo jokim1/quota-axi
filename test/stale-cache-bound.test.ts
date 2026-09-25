@@ -79,9 +79,16 @@ function fixture(seed?: { timing: WindowTiming; refreshedAt: string }) {
       tokens: { access_token: "fixture", account_id: "acct-fixture" },
     }),
   );
+  // Linux reads accessToken from this auth file; macOS reads the same path as
+  // identity-only cli-config.json, so authInfo is required for the CLI source
+  // to be present (Keychain-gated) rather than missing. A missing CLI source
+  // is a definitive sign-out and would retire the stale snapshot under test.
   writeFileSync(
     join(root, "cursor-auth.json"),
-    JSON.stringify({ accessToken: "fixture" }),
+    JSON.stringify({
+      accessToken: "fixture",
+      authInfo: { email: "fixture@example.com", userId: "fixture-user" },
+    }),
   );
   writeFileSync(
     join(root, "apps.json"),
