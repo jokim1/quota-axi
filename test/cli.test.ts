@@ -3055,6 +3055,9 @@ describe("CLI plumbing via the axi SDK", () => {
     PROVIDERS.mimo = providerWithAuth("mimo", "MiMo");
     PROVIDERS.deepseek = providerWithAuth("deepseek", "DeepSeek");
     PROVIDERS.openrouter = providerWithAuth("openrouter", "OpenRouter");
+    PROVIDERS.elevenlabs = providerWithAuth("elevenlabs", "ElevenLabs");
+    PROVIDERS.devin = providerWithAuth("devin", "Devin");
+    PROVIDERS.muse = providerWithAuth("muse", "Muse");
     PROVIDERS.higgsfield = providerWithAuth("higgsfield", "Higgsfield");
 
     const output = await capture(["--allow-keychain-prompt", "auth"]);
