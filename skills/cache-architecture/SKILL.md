@@ -58,4 +58,4 @@ PHI-safe job counts (`jobs.sampled` / `completed` / `failed` / `other`) are stor
 - Stored alongside the cache directory in `~/.cache/quota-axi/`.
 - Must have `0600` permissions.
 - Filename is keyed by a hash of the selected service and account name. Contains no secret material.
-- Permits non-prompting subsequent Keychain value reads once an initial grant is confirmed.
+- Value-read permission and grant reuse follow [README Provider notes](../../README.md#provider-notes).
