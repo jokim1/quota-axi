@@ -69,7 +69,7 @@ Credential selection is shared in `src/providers/credential-selection.ts`:
 
 ## Delegated Credential Refresh
 
-Shared machinery lives in `src/providers/delegated-refresh.ts`. It is the **single carve-out** to quota-axi's read-only boundary:
+Shared machinery lives in `src/providers/delegated-refresh.ts`. Its credential-renewal boundary is defined in [README Delegated credential refresh](../../README.md#delegated-credential-refresh):
 
 - **Eligibility criteria**: A delegate is eligible ONLY when:
   1. The same stored access token is expired,
@@ -85,7 +85,7 @@ Shared machinery lives in `src/providers/delegated-refresh.ts`. It is the **sing
   - Grok: `grok models`
   - Codex: `app-server` JSON-RPC probe
 
-  All other providers (Cursor, Copilot, Kimi, Z.AI, Alibaba, OpenCode Go, Antigravity, Command Code, MiniMax, MiMo, DeepSeek, OpenRouter, ElevenLabs, Devin, Muse, Higgsfield) remain strictly read-only.
+  Other vendor-command boundaries and opt-in inference exceptions are defined in [README Safety guarantees](../../README.md#safety-guarantees).
 
 - **Option gating**: Delegated refresh is gated by `ProviderOptions.refreshCredentials`. `--no-credential-refresh` disables it; the `auth` command always passes `false`. Tests must specify it explicitly to prevent accidental CLI spawning.
 
