@@ -381,7 +381,11 @@ async function acquireMuseQuota(
   let skippedCredentialError: string | undefined;
 
   for (const source of dependencies.sources) {
-    const resolution = await resolveSource(source, options);
+    const resolution = await resolveSource(
+      source,
+      options,
+      options.allowMuseInference === true && !options.allowKeychainPrompt,
+    );
     if (resolution.status === "resolved") {
       candidates.push({
         source: source.name,

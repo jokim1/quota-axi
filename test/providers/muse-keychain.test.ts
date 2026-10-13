@@ -1,4 +1,11 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -46,6 +53,7 @@ beforeEach(() => {
 let platformDescriptor: PropertyDescriptor | undefined;
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.doUnmock("../../src/lib/process.js");
   vi.resetModules();
@@ -135,6 +143,99 @@ function sequentialFetch(responses: Response[]): ReturnType<typeof vi.fn> {
 }
 
 describe("Muse Keychain credential source", () => {
+  it.each([
+    [false, false, 1],
+    [false, true, 1],
+    [true, false, 0],
+    [true, true, 1],
+  ])(
+    "after a grant is revoked, inference=%s prompt=%s makes %s value reads",
+    async (allowMuseInference, allowKeychainPrompt, valueReads) => {
+      const callsPath = join(directory, "security-calls");
+      const revokedPath = join(directory, "revoked");
+      writeFileSync(
+        join(directory, "security"),
+        `#!/bin/sh
+printf '%s\\n' "$*" >> "$MUSE_TEST_CALLS"
+for arg in "$@"; do
+  if [ "$arg" = "-w" ]; then
+    if [ -f "$MUSE_TEST_REVOKED" ]; then exit 128; fi
+    printf '%s\\n' '${JSON.stringify(bundle())}'
+    exit 0
+  fi
+done
+printf '%s\\n' 'keychain item metadata'
+`,
+        { mode: 0o700 },
+      );
+      vi.stubEnv("PATH", directory);
+      vi.stubEnv("MUSE_TEST_CALLS", callsPath);
+      vi.stubEnv("MUSE_TEST_REVOKED", revokedPath);
+      const muse = await museModule();
+      const fetchMock = sequentialFetch([jsonResponse(KEY_RESPONSE)]);
+      const fetchServeQuota = vi.fn(async () => ({
+        kind: "success" as const,
+        usage: {
+          window: {
+            usedPercent: 42.5,
+            windowDurationMins: 300,
+            resetsAtMs: NOW + 7_200_000,
+          },
+          observedAtMs: NOW,
+        },
+        refreshedAt: new Date(NOW).toISOString(),
+      }));
+      const adapter = muse.createMuseAdapter({
+        sources: [muse.createMuseKeychainSource()],
+        fetch: fetchMock as typeof fetch,
+        fetchServeQuota,
+        readCachedProvider: () => undefined,
+        deleteCachedProvider: () => undefined,
+        ledger: {
+          recent: () => undefined,
+          record: () => undefined,
+          claim: () => ({ kind: "claimed" as const }),
+        },
+        now: () => NOW,
+      });
+      expect((await adapter.fetchQuota(PROMPT_OPTIONS)).state.status).toBe(
+        "fresh",
+      );
+      const { museKeychainAccessMarkerPath } =
+        await import("../../src/lib/fs.js");
+      const marker = museKeychainAccessMarkerPath(
+        "ai.meta.dev.credentials",
+        "meta",
+      );
+      expect(existsSync(marker)).toBe(true);
+      writeFileSync(revokedPath, "revoked\n");
+      writeFileSync(callsPath, "");
+      fetchMock.mockClear();
+
+      const report = await adapter.fetchQuota({
+        ...OPTIONS,
+        allowMuseInference,
+        allowKeychainPrompt,
+      });
+
+      const calls = readFileSync(callsPath, "utf8").trim().split("\n");
+      expect(calls).toHaveLength(1 + valueReads);
+      expect(
+        calls.filter((call) => call.split(" ").includes("-w")),
+      ).toHaveLength(valueReads);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(fetchServeQuota).toHaveBeenCalledTimes(allowMuseInference ? 1 : 0);
+      expect(report.state.status).toBe(allowMuseInference ? "fresh" : "error");
+      if (allowMuseInference) {
+        expect(report.source).toBe("cli");
+        expect(report.windows[0].percentUsed).toBe(42.5);
+      } else {
+        expect(report.state.error).toBe("keychain_access_denied");
+      }
+      expect(existsSync(marker)).toBe(true);
+    },
+  );
+
   it("is absent off macOS without probing the Keychain", async () => {
     const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
     Object.defineProperty(process, "platform", { value: "linux" });
