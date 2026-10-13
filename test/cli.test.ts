@@ -202,6 +202,7 @@ describe("CLI flag parsing", () => {
         all: false,
         allowKeychainPrompt: true,
         allowClaudeInference: false,
+        allowMuseInference: false,
         noCredentialRefresh: false,
         profileOnly: false,
       },
@@ -434,6 +435,27 @@ describe("delegated credential refresh wiring", () => {
         undefined,
       ),
     ).rejects.toThrow("only supported by the quota command");
+  });
+
+  it("rejects recurring or unrelated Muse inference opt-ins", async () => {
+    await expect(
+      quotaCommand(
+        ["--provider", "muse", "--tui", "--allow-muse-inference"],
+        undefined,
+      ),
+    ).rejects.toThrow("requires --once with --tui");
+    await expect(
+      quotaCommand(
+        ["--provider", "codex", "--allow-muse-inference"],
+        undefined,
+      ),
+    ).rejects.toThrow("requires the muse provider");
+    await expect(
+      authCommand(["--provider", "muse", "--allow-muse-inference"], undefined),
+    ).rejects.toThrow("only supported by the quota command");
+    expect(() => parseModelsFlags(["--allow-muse-inference"])).toThrow(
+      "only supported by the quota command",
+    );
   });
 
   it("never delegates a refresh from the read-only auth report", async () => {

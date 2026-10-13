@@ -22,6 +22,8 @@ export type QuotaFlags = {
   allowKeychainPrompt: boolean;
   /** Permit one bounded Claude inference to recover env-token quota headers. */
   allowClaudeInference: boolean;
+  /** Permit one bounded Muse turn via `muse serve` to read usage. */
+  allowMuseInference: boolean;
   /**
    * Opt out of delegated credential refresh: never run a vendor CLI's own
    * non-interactive refresh command, even when a stored access token is
@@ -90,6 +92,13 @@ export function parseModelsFlags(args: string[]): ModelsFlags {
       ["Run `quota-axi --provider claude --allow-claude-inference`"],
     );
   }
+  if (flags.allowMuseInference) {
+    throw new AxiError(
+      "--allow-muse-inference is only supported by the quota command",
+      "VALIDATION_ERROR",
+      ["Run `quota-axi --provider muse --allow-muse-inference`"],
+    );
+  }
   if (flags.profileOnly) {
     throw new AxiError(
       "--profile-only is only supported by the quota command",
@@ -134,6 +143,7 @@ function parseCommonFlags(
   let theme: TuiThemeSetting | undefined;
   let allowKeychainPrompt = false;
   let allowClaudeInference = false;
+  let allowMuseInference = false;
   let noCredentialRefresh = false;
   let profileOnly = false;
   let intelligence: IntelligenceBucket | undefined;
@@ -197,6 +207,10 @@ function parseCommonFlags(
     }
     if (arg === "--allow-claude-inference") {
       allowClaudeInference = true;
+      continue;
+    }
+    if (arg === "--allow-muse-inference") {
+      allowMuseInference = true;
       continue;
     }
     if (arg === "--no-credential-refresh") {
@@ -293,6 +307,7 @@ function parseCommonFlags(
     all,
     allowKeychainPrompt,
     allowClaudeInference,
+    allowMuseInference,
     noCredentialRefresh,
     profileOnly,
     ...(refreshSeconds !== undefined ? { refreshSeconds } : {}),

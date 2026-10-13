@@ -410,6 +410,13 @@ export type ProviderOptions = {
    * headers when an env bearer cannot use the zero-spend usage endpoint.
    */
   allowClaudeInference?: boolean;
+  /**
+   * Explicitly permit one bounded Muse turn through the vendor's own
+   * `muse serve` host to read subscription usage when the zero-spend key
+   * endpoint sources cannot answer (for example a Keychain value read the
+   * caller has not granted).
+   */
+  allowMuseInference?: boolean;
   /** Restrict discovery to the provider's selected native profile file. */
   credentialMode?: "profile-only";
   /**

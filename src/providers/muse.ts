@@ -45,6 +45,11 @@ import {
   type MuseKeyReadClaim,
   type MuseKeyReadLedger,
 } from "./muse-read-gate.js";
+import {
+  fetchMuseServeQuota,
+  type MuseServeQuotaResult,
+  type MuseServeUsage,
+} from "./muse-serve-quota.js";
 
 export const MUSE_API_ORIGIN = "https://api.meta.ai";
 export const MUSE_KEY_PATH = "/muse-code/key";
@@ -53,6 +58,8 @@ export const MUSE_API_VERSION = "1.0.0";
 
 export const MUSE_AUTH_FILE_SOURCE = "muse:auth.json";
 export const MUSE_API_KEY_SOURCE = "env:META_API_KEY";
+/** Attempt name for the opt-in `muse serve` inference fallback. */
+export const MUSE_SERVE_SOURCE = "muse-serve-inference";
 
 /**
  * Ownership-stability order. The Muse CLI's own sign-in store comes first -
@@ -135,6 +142,7 @@ export type NormalizedMusePayload = {
 
 type MuseDependencies = {
   sources: readonly MuseCredentialSource[];
+  fetchServeQuota: () => Promise<MuseServeQuotaResult>;
   fetch: typeof globalThis.fetch;
   readCachedProvider: (contextId: string) => ProviderQuota | undefined;
   deleteCachedProvider: () => void;
@@ -287,6 +295,7 @@ export function createMuseAdapter(
       createMuseApiKeySource(),
     ],
     fetch: providerFetch,
+    fetchServeQuota: () => fetchMuseServeQuota(),
     readCachedProvider: readCachedProviderFromDisk,
     deleteCachedProvider: () => deleteCachedProviderFromDisk("muse"),
     ledger: createFileMuseKeyReadLedger(),
@@ -363,7 +372,7 @@ async function inspectAuth(
 
 async function acquireMuseQuota(
   dependencies: MuseDependencies,
-  options: Pick<ProviderOptions, "allowKeychainPrompt">,
+  options: Pick<ProviderOptions, "allowKeychainPrompt" | "allowMuseInference">,
 ): Promise<ProviderQuota> {
   clearMuseReadingContextId();
   const localAttempts = new Map<string, SourceAttempt>();
@@ -437,6 +446,39 @@ async function acquireMuseQuota(
     return selection.result.kind === "reused"
       ? reusedReport(selection.result.snapshot, attempts, sourcesTried)
       : freshReport(selection.result, attempts, sourcesTried);
+  }
+
+  // The zero-spend sources could not answer. Only under the explicit opt-in,
+  // and only when a local source gave evidence Muse is set up here (a
+  // resolved credential, a present credential that may not be read, or a
+  // present store that failed to read), spend one bounded `muse serve`
+  // turn: the Muse CLI reads its own credential, so no Keychain value is
+  // requested. A failed turn leaves the original verdict untouched.
+  const serveEvidence =
+    candidates.length > 0 ||
+    skippedCredentialError !== undefined ||
+    localError !== undefined;
+  if (options.allowMuseInference && serveEvidence) {
+    const serve = await attemptServeQuota(dependencies);
+    if (serve.kind === "success") {
+      attempts.push({ source: MUSE_SERVE_SOURCE, status: "success" });
+      return freshReport(
+        {
+          kind: "fresh",
+          payload: serve.payload,
+          refreshedAt: serve.refreshedAt,
+        },
+        attempts,
+        attempts.map(({ source }) => source),
+        "cli",
+      );
+    }
+    attempts.push({
+      source: MUSE_SERVE_SOURCE,
+      status: "failed",
+      error: serve.error,
+      degraded: false,
+    });
   }
 
   if (selection.outcome === "transient") {
@@ -731,16 +773,95 @@ function orderedAttempts(
   return attempts;
 }
 
+type MuseServeAttempt =
+  | { kind: "success"; payload: NormalizedMusePayload; refreshedAt: number }
+  | { kind: "failure"; error: string };
+
+/**
+ * One opt-in `muse serve` reading, normalized through the same window model
+ * as the key endpoint so consumers see one shape. A reading with no usable
+ * window is a failed read: the host observed usage only because a turn ran,
+ * so an observation that yields nothing measurable proves nothing.
+ */
+async function attemptServeQuota(
+  dependencies: MuseDependencies,
+): Promise<MuseServeAttempt> {
+  let result: MuseServeQuotaResult;
+  try {
+    result = await dependencies.fetchServeQuota();
+  } catch {
+    return { kind: "failure", error: "muse_serve_process_failed" };
+  }
+  if (result.kind === "failure")
+    return { kind: "failure", error: result.error };
+  const refreshedAt = Date.parse(result.refreshedAt);
+  const now = Number.isFinite(refreshedAt) ? refreshedAt : dependencies.now();
+  let payload: NormalizedMusePayload;
+  try {
+    payload = normalizeMuseServeUsage(result.usage, now);
+  } catch {
+    return { kind: "failure", error: "muse_serve_quota_unavailable" };
+  }
+  if (payload.windows.length === 0)
+    return { kind: "failure", error: "muse_serve_quota_unavailable" };
+  return { kind: "success", payload, refreshedAt: now };
+}
+
+/**
+ * Translate the MSP `SubscriptionUsage` shape (`usedPercent`, epoch-ms
+ * resets, `windowDurationMins`) into the key endpoint's `subs_usage` shape
+ * and run it through {@link normalizeMusePayload}, so window identity,
+ * `percentRemaining` direction, and untrusted-window handling are defined
+ * once. The MSP `tier` is an opaque id, not the tier name `plan` carries,
+ * so it is not published as a plan.
+ */
+export function normalizeMuseServeUsage(
+  usage: MuseServeUsage,
+  now: number,
+): NormalizedMusePayload {
+  const subsUsage: Record<string, unknown> = {};
+  const window = objectValue(usage.window);
+  if (window) {
+    subsUsage.window = {
+      used_percent: window.usedPercent,
+      window_duration_mins: window.windowDurationMins,
+      ...(epochSeconds(window.resetsAtMs) !== undefined
+        ? { resets_at: epochSeconds(window.resetsAtMs) }
+        : {}),
+    };
+  }
+  const weekly = objectValue(usage.weekly);
+  if (weekly) {
+    subsUsage.weekly = {
+      used_percent: weekly.usedPercent,
+      ...(epochSeconds(weekly.resetsAtMs) !== undefined
+        ? { resets_at: epochSeconds(weekly.resetsAtMs) }
+        : {}),
+    };
+  }
+  return normalizeMusePayload(
+    { is_subs_active: true, subs_usage: subsUsage },
+    now,
+  );
+}
+
+function epochSeconds(epochMs: unknown): number | undefined {
+  return typeof epochMs === "number" && Number.isFinite(epochMs)
+    ? epochMs / 1000
+    : undefined;
+}
+
 function freshReport(
   reading: Extract<MuseReading, { kind: "fresh" }>,
   attempts: SourceAttempt[],
   sourcesTried: string[],
+  source: ProviderQuota["source"] = "api",
 ): ProviderQuota {
   const { payload } = reading;
   return {
     provider: "muse",
     label: LABEL,
-    source: "api",
+    source,
     ...(payload.plan ? { plan: payload.plan } : {}),
     windows: payload.windows,
     state: {

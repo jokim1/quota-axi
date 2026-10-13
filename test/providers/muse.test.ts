@@ -26,9 +26,12 @@ import {
   MUSE_API_VERSION,
   MUSE_AUTH_FILE_SOURCE,
   MUSE_KEY_PATH,
+  MUSE_SERVE_SOURCE,
   MUSE_SOURCE_ORDER,
   museAuthFilePath,
   normalizeMusePayload,
+  normalizeMuseServeUsage,
+  type MuseCredentialSource,
 } from "../../src/providers/muse.js";
 import { museCacheContextId } from "../../src/providers/muse-cache-context.js";
 import { MUSE_KEYCHAIN_SOURCE } from "../../src/providers/muse-keychain-credential.js";
@@ -1278,6 +1281,124 @@ describe("Muse credential and account data never leave the process", () => {
 
     expect(readFileSync(store, "utf8")).toBe(contents);
     expect(statSync(store).mtimeMs).toBe(before.mtimeMs);
+  });
+});
+
+describe("Muse serve inference fallback", () => {
+  const SERVE_USAGE = {
+    window: {
+      usedPercent: 42.5,
+      windowDurationMins: 300,
+      resetsAtMs: Date.parse("2026-06-20T14:00:00.000Z"),
+    },
+    weekly: {
+      usedPercent: 17,
+      resetsAtMs: Date.parse("2026-06-23T12:00:00.000Z"),
+    },
+    tier: "synthetic-opaque-tier-id",
+    observedAtMs: NOW,
+  };
+  const SERVE_SUCCESS = {
+    kind: "success" as const,
+    usage: SERVE_USAGE,
+    refreshedAt: new Date(NOW).toISOString(),
+  };
+  const keychainBlockedSource: MuseCredentialSource = {
+    name: MUSE_KEYCHAIN_SOURCE,
+    location: () => "Keychain ai.meta.dev.credentials",
+    resolve: () =>
+      Promise.resolve({
+        status: "skipped" as const,
+        error: "keychain_prompt_required",
+      }),
+  };
+
+  it("maps serve usage into the same windows as the key endpoint", () => {
+    const payload = normalizeMuseServeUsage(SERVE_USAGE, NOW);
+    expect(payload.windows).toEqual(EXPECTED_WINDOWS);
+    // The MSP tier is an opaque id, never the tier name `plan` carries.
+    expect(payload.plan).toBeUndefined();
+  });
+
+  it("reads through muse serve only under the opt-in when the Keychain read is blocked", async () => {
+    const fetchServeQuota = vi.fn(() => Promise.resolve(SERVE_SUCCESS));
+    const keyFetch = sequentialFetch([]);
+    const adapter = testAdapter({
+      sources: [keychainBlockedSource],
+      fetch: keyFetch as unknown as typeof fetch,
+      fetchServeQuota,
+    });
+
+    const blocked = await adapter.fetchQuota(OPTIONS);
+    expect(fetchServeQuota).not.toHaveBeenCalled();
+    expect(blocked.source).toBe("unavailable");
+    expect(blocked.state.error).toBe("keychain_prompt_required");
+
+    const report = await adapter.fetchQuota({
+      ...OPTIONS,
+      allowMuseInference: true,
+    });
+    expect(fetchServeQuota).toHaveBeenCalledTimes(1);
+    expect(keyFetch).not.toHaveBeenCalled();
+    expect(report.source).toBe("cli");
+    expect(report.plan).toBeUndefined();
+    expect(report.windows).toEqual(EXPECTED_WINDOWS);
+    expect(report.state).toMatchObject({
+      status: "fresh",
+      authStatus: "usable",
+      refreshedAt: new Date(NOW).toISOString(),
+    });
+    expect(report.attempts).toContainEqual({
+      source: MUSE_SERVE_SOURCE,
+      status: "success",
+    });
+  });
+
+  it("keeps the blocked verdict when the serve read fails", async () => {
+    const fetchServeQuota = vi.fn(() =>
+      Promise.resolve({
+        kind: "failure" as const,
+        error: "muse_serve_timeout",
+      }),
+    );
+    const report = await testAdapter({
+      sources: [keychainBlockedSource],
+      fetch: sequentialFetch([]) as unknown as typeof fetch,
+      fetchServeQuota,
+    }).fetchQuota({ ...OPTIONS, allowMuseInference: true });
+
+    expect(report.source).toBe("unavailable");
+    expect(report.state.error).toBe("keychain_prompt_required");
+    expect(report.attempts).toContainEqual({
+      source: MUSE_SERVE_SOURCE,
+      status: "failed",
+      error: "muse_serve_timeout",
+      degraded: false,
+    });
+  });
+
+  it("never spends a turn when every local source is absent", async () => {
+    const fetchServeQuota = vi.fn(() => Promise.resolve(SERVE_SUCCESS));
+    const report = await testAdapter({
+      sources: [authFileSource(undefined), apiKeySource(undefined)],
+      fetch: sequentialFetch([]) as unknown as typeof fetch,
+      fetchServeQuota,
+    }).fetchQuota({ ...OPTIONS, allowMuseInference: true });
+
+    expect(fetchServeQuota).not.toHaveBeenCalled();
+    expect(report.state.status).toBe("auth_required");
+  });
+
+  it("never spends a turn when the zero-spend key read already answered", async () => {
+    const fetchServeQuota = vi.fn(() => Promise.resolve(SERVE_SUCCESS));
+    const report = await testAdapter({ fetchServeQuota }).fetchQuota({
+      ...OPTIONS,
+      allowMuseInference: true,
+    });
+
+    expect(fetchServeQuota).not.toHaveBeenCalled();
+    expect(report.source).toBe("api");
+    expect(report.windows).toEqual(EXPECTED_WINDOWS);
   });
 });
 

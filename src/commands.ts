@@ -73,10 +73,12 @@ export async function quotaCommand(
   const flags = parseFlags(args);
   validateProfileOnly(flags);
   validateClaudeInference(flags);
+  validateMuseInference(flags);
   const options: ProviderOptions = {
     allowKeychainPrompt: flags.profileOnly ? false : flags.allowKeychainPrompt,
     refreshCredentials: flags.profileOnly ? false : !flags.noCredentialRefresh,
     ...(flags.allowClaudeInference ? { allowClaudeInference: true } : {}),
+    ...(flags.allowMuseInference ? { allowMuseInference: true } : {}),
     ...(flags.profileOnly ? { credentialMode: "profile-only" as const } : {}),
   };
 
@@ -345,6 +347,13 @@ export async function authCommand(
       ["Run `quota-axi --provider claude --allow-claude-inference`"],
     );
   }
+  if (flags.allowMuseInference) {
+    throw new AxiError(
+      "--allow-muse-inference is only supported by the quota command",
+      "VALIDATION_ERROR",
+      ["Run `quota-axi --provider muse --allow-muse-inference`"],
+    );
+  }
   if (flags.profileOnly) {
     throw new AxiError(
       "--profile-only is only supported by the quota command",
@@ -408,6 +417,31 @@ function validateClaudeInference(flags: QuotaFlags): void {
   if (flags.tui && !flags.once) {
     throw new AxiError(
       "--allow-claude-inference requires --once with --tui",
+      "VALIDATION_ERROR",
+      ["Recurring TUI refreshes would repeatedly spend inference quota"],
+    );
+  }
+}
+
+function validateMuseInference(flags: QuotaFlags): void {
+  if (!flags.allowMuseInference) return;
+  if (!flags.providers.includes("muse")) {
+    throw new AxiError(
+      "--allow-muse-inference requires the muse provider",
+      "VALIDATION_ERROR",
+      ["Run `quota-axi --provider muse --allow-muse-inference`"],
+    );
+  }
+  if (flags.profileOnly) {
+    throw new AxiError(
+      "--allow-muse-inference cannot be combined with --profile-only",
+      "VALIDATION_ERROR",
+      ["Remove --profile-only to use the Muse CLI's own session"],
+    );
+  }
+  if (flags.tui && !flags.once) {
+    throw new AxiError(
+      "--allow-muse-inference requires --once with --tui",
       "VALIDATION_ERROR",
       ["Recurring TUI refreshes would repeatedly spend inference quota"],
     );
